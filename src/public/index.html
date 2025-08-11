@@ -1,0 +1,220 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Autonomous RC Car Configuration</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root {
+      --bg: #f7f7f8;
+      --card: #ffffff;
+      --ink: #111;
+      --muted: #666;
+      --ok: #16a34a;
+      --warn: #f59e0b;
+      --err: #dc2626;
+      --border: #e5e7eb;
+    }
+    body { font-family: ui-sans-serif, system-ui, Arial; margin: 24px; background: var(--bg); color: var(--ink); }
+    header { background:#111; color:#fff; padding:14px 16px; border-radius:12px; }
+    main { margin-top: 20px; display: grid; gap: 16px; max-width: 720px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; box-shadow: 0 1px 6px rgba(0,0,0,.05); }
+    label { display:block; font-weight:600; margin-bottom:6px; }
+    select, input[type="password"] { width:100%; padding:10px; border:1px solid #ccc; border-radius:8px; font-size:1rem; }
+    button { padding:10px 14px; border-radius:10px; border:1px solid #222; background:#111; color:#fff; font-weight:600; cursor:pointer; }
+    button.secondary { background:#fff; color:#111; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .muted { color:var(--muted); font-size:.9rem; }
+    #status { white-space: pre-wrap; }
+    .hidden { display:none; }
+
+    /* ---- Wi‑Fi icon styles ---- */
+    .wifi-wrap { display:flex; align-items:center; gap:10px; }
+    .wifi {
+      width: 28px; height: 22px; position: relative; display:inline-block;
+      --wifi-color: #6b7280; /* default grey */
+    }
+    .wifi .dot, .wifi .arc {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      background: var(--wifi-color);
+    }
+    .wifi .dot {
+      bottom: 0; width: 6px; height: 6px; border-radius: 50%;
+    }
+    .wifi .arc { border-radius: 999px; }
+    .wifi .a1 { bottom: 4px; width: 14px; height: 6px; }
+    .wifi .a2 { bottom: 9px; width: 20px; height: 6px; }
+    .wifi .a3 { bottom: 14px; width: 26px; height: 6px; }
+
+    /* Connected (green), Idle/Scanning (grey), Error (red) via state classes: */
+    .wifi.connected { --wifi-color: var(--ok); }
+    .wifi.scanning { --wifi-color: #475569; }
+    .wifi.connecting { --wifi-color: var(--warn); }
+    .wifi.error { --wifi-color: var(--err); }
+
+    /* Animation for connecting/scanning: pulse arcs upward */
+    @keyframes wifi-pulse {
+      0%   { opacity: .25; transform: translateX(-50%) scale(0.95); }
+      30%  { opacity: .9;  transform: translateX(-50%) scale(1.02); }
+      60%  { opacity: .5;  transform: translateX(-50%) scale(0.98); }
+      100% { opacity: .25; transform: translateX(-50%) scale(0.95); }
+    }
+    .wifi.connecting .a1 { animation: wifi-pulse 0.9s ease-in-out infinite; }
+    .wifi.connecting .a2 { animation: wifi-pulse 0.9s ease-in-out infinite 0.12s; }
+    .wifi.connecting .a3 { animation: wifi-pulse 0.9s ease-in-out infinite 0.24s; }
+
+    .wifi.scanning .a1 { animation: wifi-pulse 1.1s ease-in-out infinite; }
+    .wifi.scanning .a2 { animation: wifi-pulse 1.1s ease-in-out infinite 0.12s; }
+    .wifi.scanning .a3 { animation: wifi-pulse 1.1s ease-in-out infinite 0.24s; }
+
+    /* Accessibility: reduce motion if user prefers */
+    @media (prefers-reduced-motion: reduce) {
+      .wifi.connecting .a1,
+      .wifi.connecting .a2,
+      .wifi.connecting .a3,
+      .wifi.scanning .a1,
+      .wifi.scanning .a2,
+      .wifi.scanning .a3 { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <header><h1>Autonomous RC Car Configuration</h1></header>
+
+  <main>
+    <div class="card">
+      <div class="row" style="justify-content: space-between;">
+        <div class="wifi-wrap">
+          <div id="wifiIcon" class="wifi scanning" aria-label="Wi‑Fi status" role="img" title="Wi‑Fi">
+            <span class="dot"></span>
+            <span class="arc a1"></span>
+            <span class="arc a2"></span>
+            <span class="arc a3"></span>
+          </div>
+          <span class="muted" id="scanInfo">Click “Scan Wi‑Fi” to list nearby networks.</span>
+        </div>
+        <button id="scanBtn" class="secondary">Scan Wi‑Fi</button>
+      </div>
+
+      <div style="margin-top:12px;">
+        <label for="ssid">Available Networks</label>
+        <select id="ssid">
+          <option value="" selected disabled>— No scan yet —</option>
+        </select>
+      </div>
+
+      <div id="pwRow" class="hidden" style="margin-top:12px;">
+        <label for="password">Password</label>
+        <input id="password" type="password" placeholder="Enter Wi‑Fi password" />
+      </div>
+
+      <div class="row" style="margin-top:14px;">
+        <button id="connectBtn">Connect</button>
+        <span id="status" class="muted"></span>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const scanBtn = document.getElementById('scanBtn');
+    const ssidSelect = document.getElementById('ssid');
+    const pwRow = document.getElementById('pwRow');
+    const passwordInput = document.getElementById('password');
+    const statusEl = document.getElementById('status');
+    const scanInfo = document.getElementById('scanInfo');
+    const wifiIcon = document.getElementById('wifiIcon');
+
+    function setStatus(text) { statusEl.textContent = text; }
+    function setScanInfo(text) { scanInfo.textContent = text; }
+
+    function setWifiState(state) {
+      wifiIcon.classList.remove('connected','connecting','scanning','error');
+      wifiIcon.classList.add(state);
+    }
+
+    async function scanWifi() {
+      setStatus('');
+      setScanInfo('Scanning…');
+      setWifiState('scanning');
+      try {
+        const res = await fetch('/api/wifi/scan');
+        if (!res.ok) throw new Error('Scan failed');
+        const networks = await res.json(); // [{ssid, signal, security, iface}]
+
+        const best = new Map();
+        for (const n of networks) {
+          if (!n.ssid) continue;
+          const prev = best.get(n.ssid);
+          if (!prev || (n.signal ?? 0) > (prev.signal ?? 0)) best.set(n.ssid, n);
+        }
+        const list = [...best.values()].sort((a,b)=> (b.signal??0)-(a.signal??0));
+        ssidSelect.innerHTML = '';
+        if (list.length === 0) {
+          ssidSelect.innerHTML = '<option value="" disabled selected>— No networks found —</option>';
+        } else {
+          for (const n of list) {
+            const opt = document.createElement('option');
+            const sec = n.security && n.security !== '--' ? n.security : 'OPEN';
+            opt.value = n.ssid;
+            opt.dataset.security = sec;
+            opt.textContent = `${n.ssid}  ·  ${sec}  ·  ${n.signal ?? 0}%`;
+            ssidSelect.appendChild(opt);
+          }
+          ssidSelect.selectedIndex = 0;
+          updatePwVisibility();
+        }
+        setScanInfo(`Found ${list.length} network(s).`);
+        // Return to idle (non-animated) unless still connecting later
+        setWifiState('scanning'); // keep subtle scan animation for a moment
+        setTimeout(()=> setWifiState(''), 800);
+      } catch (e) {
+        setScanInfo('Scan error.');
+        setStatus('Error scanning Wi‑Fi. Is NetworkManager/nmcli installed?');
+        setWifiState('error');
+      }
+    }
+
+    function updatePwVisibility() {
+      const opt = ssidSelect.selectedOptions[0];
+      if (!opt) { pwRow.classList.add('hidden'); return; }
+      const sec = opt.dataset.security || 'OPEN';
+      if (sec === 'OPEN') pwRow.classList.add('hidden'); else pwRow.classList.remove('hidden');
+    }
+
+    async function connectWifi() {
+      const ssid = ssidSelect.value;
+      if (!ssid) { setStatus('Please select a network.'); return; }
+      const sec = ssidSelect.selectedOptions[0]?.dataset.security || 'OPEN';
+      const password = passwordInput.value;
+
+      if (sec !== 'OPEN' && !password) {
+        setStatus('Password required for secured network.');
+        return;
+      }
+
+      setStatus(`Connecting to "${ssid}"…`);
+      setWifiState('connecting');
+
+      try {
+        const res = await fetch('/api/wifi/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ssid, password })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || 'Connect failed');
+
+        setStatus(`Connected to "${ssid}" on ${data.iface} (IP: ${data.ip || 'pending'})`);
+        setWifiState('connected');
+      } catch (e) {
+        setStatus(`Failed to connect: ${e.message}`);
+        setWifiState('error');
+      }
+    }
+
+    scanBtn.addEventListener('click', scanWifi);
+    ssidSelect.addEventListener('change', updatePwVisibility);
+    document.getElementById('connectBtn').addEventListener('click', connectWifi);
+  </script>
+</body>
+</html>
