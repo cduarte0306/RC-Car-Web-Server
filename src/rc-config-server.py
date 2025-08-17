@@ -76,8 +76,12 @@ if __name__ == "__main__":
         print("No command-line arguments provided.")
 
     # Interface to bind to
-    ip = get_ip_address(b'eth0')
-    print(ip)
+    ip = get_ip_address(b'enP8p1s0')
+    if not ip:
+        print("Could not determine the IP address of the interface")
+        sys.exit(1)
+        
+    print("Inteface IPL: ", ip)
 
     # debug=True reloads on changes during dev
     app.run(host=ip, port=5000, debug=True)
