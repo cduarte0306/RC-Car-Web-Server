@@ -1,5 +1,9 @@
 from flask import Flask, render_template, request, jsonify
 import subprocess
+import sys
+import socket
+import fcntl
+import struct
 
 
 app = Flask(__name__)
@@ -58,6 +62,22 @@ def wifi_connect():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+def get_ip_address(ifname):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    return socket.inet_ntoa(fcntl.ioctl(
+        s.fileno(),
+        0x8915,  # SIOCGIFADDR
+        struct.pack('256s', ifname[:15])
+    )[20:24])
+
+
 if __name__ == "__main__":
+    if len(sys.argv) < 1:
+        print("No command-line arguments provided.")
+
+    # Interface to bind to
+    ip = get_ip_address(b'eth0')
+    print(ip)
+
     # debug=True reloads on changes during dev
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host=ip, port=5000, debug=True)
