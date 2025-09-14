@@ -8,6 +8,7 @@ import os
 import time
 import uuid
 import threading
+import logging
 
 from connection_manager import UpdatePipe
 import time
@@ -21,6 +22,7 @@ status_lock  = threading.Lock()
 thread_can_run : bool = False
 progress : float = 0.0
 thread = None
+save_path : str = ""
 
 app = Flask(__name__)
 
@@ -101,6 +103,8 @@ def swu_upload():
     if "file" not in request.files:
         return jsonify({"ok": False, "error": "No file part"}), 400
     
+    save_path = ""
+
     # Clear current files in the dir
     try:
         for filename in os.listdir(UPLOAD_DIR):
@@ -153,10 +157,13 @@ def swu_apply():
 
     # TODO: put your swupdate call here later
     # e.g., subprocess.Popen(["swupdate", "-i", real_path, "-e", "stable", "-v"])+
-    ret : bool = updater.start_update()
-    msg = "apply stub (no-op)" if ret else "ERROR"
     
-    thread = threading.Thread(target=poll)
+    # start the updater with the validated real path (not the module-level save_path)
+    ret : bool = updater.start_update(real_path)
+    msg = "apply stub (no-op)" if ret else "ERROR"
+    # start background poller thread (store as module-level variable); daemon so it won't block shutdown
+    global thread
+    thread = threading.Thread(target=poll, daemon=True)
     thread.start()
 
     return jsonify({
@@ -176,25 +183,42 @@ def get_ip_address(ifname):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 1:
-        print("No command-line arguments provided.")
+    # Create base logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
 
-    print("Web server version: 1.0.0")
+    # Formatter (add timestamps if you want)
+    formatter = logging.Formatter('[%(levelname)s] %(message)s')
+
+    # File handler
+    file_handler = logging.FileHandler('/var/log/rc-car-webserver.log')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    # Console (stdout) handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    if len(sys.argv) < 1:
+        logging.log(logging.ERROR, "No command-line arguments provided.")
+
+    logging.log(logging.INFO, "Web server version: 1.0.0")
 
     # Interface to bind to
     ip = get_ip_address(b'enP8p1s0')
     if not ip:
-        print("Could not determine the IP address of the interface")
+        logging.log(logging.ERROR, "Could not determine the IP address of the interface")
         sys.exit(1)
 
     # Remove all files in /home/images
 
     # ip = "127.0.0.1"
     if updater.init_connection() == False:
-        print("ERROR: Failed to open port")
+        logging.log(logging.ERROR, "ERROR: Failed to open port")
         exit(0)
         
-    print("Inteface IPL: ", ip)
+    logging.log(logging.INFO, "Interface IPL: %s", ip)
 
     # debug=True reloads on changes during dev
     app.run(host=ip, port=5000, debug=True, use_reloader=False)

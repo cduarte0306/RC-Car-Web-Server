@@ -68,7 +68,20 @@ class TcpClient:
             print("ERROR: Invalid data type")
             return False
         
-        self.__socket.sendall(data)
+        num_retries : int = 0
+
+        while True:
+            try:
+                self.__socket.sendall(data)
+            except BrokenPipeError:
+                if not self.open(5.0):
+                    num_retries += 1
+
+                    if num_retries > 5:
+                        logging.log(logging.ERROR, "ERROR: Maximum number of retries reached")
+                        return False
+                    continue
+            break
         return True
     
 
@@ -106,31 +119,30 @@ class UpdatePipe(TcpClient):
 
 
     def init_connection(self) -> bool:
-        print("Opening socket port")
+        logging.log(logging.INFO, "Opening socket port")
         self.__connection_status = self.open(5) # Open the socket
         return self.__connection_status
 
     
-    def start_update(self) -> bool:
+    def start_update(self, file_path : str) -> bool:
         if not self.__connection_status:
             return False
-        
-        msg_out : dict = {
-            "port"    : UpdatePipe.WEBSERVER_PORT,
-            "command" : UpdatePipe.commands.INIT_UPDATE.value
-        }
 
-        print("Starting update...")
+        logging.log(logging.INFO,"Starting update with file at %s", file_path)        
+        msg_out : dict = {
+            "port"      : UpdatePipe.WEBSERVER_PORT,
+            "command"   : UpdatePipe.commands.INIT_UPDATE.value,
+            "file_path" : file_path
+        }
 
         payload : bytes
 
         try:
             payload = json.dumps(msg_out).encode('utf-8')
         except Exception as e:
-            logger.exception("Failed to serialize update message")
+            logging.exception("Failed to serialize update message")
             return False
         
-        print(payload)
         ret : bool = self.send(payload)
         if not ret:
             return False
@@ -138,18 +150,18 @@ class UpdatePipe(TcpClient):
         data : bytes = self.read()
         if data == None:
             return False
+        
         reply : dict
 
         try:
             reply = json.loads(data.decode('utf-8'))
         except json.JSONDecodeError:
-            print("ERROR: Invalid reply")
-        
+            logging.log(logging.ERROR, "Invalid reply")       
+            return False 
+
         if not reply["status"]:
             return False
         
-        print(reply)
-
         return True
     
 
@@ -167,7 +179,7 @@ class UpdatePipe(TcpClient):
         try:
             payload = json.dumps(msg_out).encode('utf-8')
         except Exception as e:
-            logger.exception("Failed to serialize update message")
+            logging.exception("Failed to serialize update message")
             return False
         
         ret : bool = self.send(payload)
@@ -179,10 +191,14 @@ class UpdatePipe(TcpClient):
         try:
             reply = json.loads(data.decode('utf-8'))
         except json.JSONDecodeError:
-            print("ERROR: Invalid reply")
+            logging.log(logging.ERROR, "Invalid reply")
+            return False
         
         if not reply["status"]:
             return False
-        
+
+        # Print reply 
+        logging.log(logging.INFO, "%s", reply["message"])
+
         return reply["progress"]
         
