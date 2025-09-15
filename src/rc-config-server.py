@@ -29,6 +29,7 @@ app = Flask(__name__)
 
 def poll() -> None:
     thread_can_run = True
+    logging.Logger(logging.INFO, "Starting status request thread...")
 
     while thread_can_run:
         status_lock.acquire()
@@ -163,7 +164,7 @@ def swu_apply():
     msg = "apply stub (no-op)" if ret else "ERROR"
     # start background poller thread (store as module-level variable); daemon so it won't block shutdown
     global thread
-    thread = threading.Thread(target=poll, daemon=True)
+    thread = threading.Thread(target=poll, daemon=True)    
     thread.start()
 
     return jsonify({
