@@ -165,9 +165,9 @@ class UpdatePipe(TcpClient):
         return True
     
 
-    def read_state(self) -> float:
+    def read_state(self) -> int:
         if not self.__connection_status:
-            return False
+            return None
         
         msg_out : dict = {
             "port"    : UpdatePipe.WEBSERVER_PORT,
@@ -180,11 +180,11 @@ class UpdatePipe(TcpClient):
             payload = json.dumps(msg_out).encode('utf-8')
         except Exception as e:
             logging.exception("Failed to serialize update message")
-            return False
+            return None
         
         ret : bool = self.send(payload)
         if not ret:
-            return False
+            return None
         
         data : bytes = self.read()
 
@@ -192,13 +192,14 @@ class UpdatePipe(TcpClient):
             reply = json.loads(data.decode('utf-8'))
         except json.JSONDecodeError:
             logging.log(logging.ERROR, "Invalid reply")
-            return False
+            return None
         
         if not reply["status"]:
-            return False
+            return None
 
         # Print reply 
-        logging.log(logging.INFO, "%s", reply["message"])
+        if reply["message"] != "":
+            logging.log(logging.INFO, "%s", reply["message"])
 
-        return reply["progress"]
+        return reply["update_status"]
         

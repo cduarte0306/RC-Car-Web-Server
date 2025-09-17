@@ -26,19 +26,25 @@ save_path : str = ""
 
 app = Flask(__name__)
 
+UPDATE_FINISHED = 3
+
 
 def poll() -> None:
     thread_can_run = True
-    logging.Logger(logging.INFO, "Starting status request thread...")
+    logging.log(logging.INFO, "Starting status request thread...")
 
     while thread_can_run:
         status_lock.acquire()
-        progress = updater.read_state()
+        update_state = updater.read_state()
+
+        if update_state != None:
+            if update_state == UPDATE_FINISHED: break
         status_lock.release()
         time.sleep(0.1)
 
-        if progress == 100.0:
-            break
+    logging.log(logging.INFO, "Update finished")
+    logging.log(logging.INFO, "Rebooting... ")
+    subprocess.run(["shutdown", "-r", "now"], check=True)
 
 
 @app.route("/")
