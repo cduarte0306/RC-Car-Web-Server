@@ -9,6 +9,7 @@ import time
 import uuid
 import threading
 import logging
+import json
 
 from connection_manager import UpdatePipe
 import time
@@ -24,27 +25,67 @@ progress : float = 0.0
 thread = None
 save_path : str = ""
 
+# Per-job state storage: map job_id -> state dict
+job_states: dict = {}
+# Per-job stop events and threads
+job_events: dict = {}
+job_threads: dict = {}
+
 app = Flask(__name__)
 
 UPDATE_FINISHED = 3
 
 
-def poll() -> None:
-    thread_can_run = True
-    logging.log(logging.INFO, "Starting status request thread...")
+def poll(job_id: str, stop_event: threading.Event, interval: float = 0.5) -> None:
+    """
+    Monitor the updater for a specific job_id. Writes the latest message and progress
+    into `job_states[job_id]` so HTTP endpoints or SSE streams can read it.
 
-    while thread_can_run:
-        status_lock.acquire()
-        update_state = updater.read_state()
+    This function returns when the update finishes or when `stop_event` is set.
+    """
+    logging.info("Starting status request thread for job %s", job_id)
 
-        if update_state != None:
-            if update_state == UPDATE_FINISHED: break
-        status_lock.release()
-        time.sleep(0.1)
+    try:
+        while not stop_event.is_set():
+            # read_state is expected to return (state, msg) where state may be None or a code
+            update_state, msg = updater.read_state()
 
-    logging.log(logging.INFO, "Update finished")
-    logging.log(logging.INFO, "Rebooting... ")
-    subprocess.run(["shutdown", "-r", "now"], check=True)
+            with status_lock:
+                st = job_states.get(job_id, {})
+                # update message text
+                st['msg'] = msg
+                # if updater provides a numeric progress in msg or separately, try to set it
+                # keep existing progress value if none available
+                # If update_state indicates finished, mark done
+                st['state'] = update_state
+                st['done'] = (update_state == UPDATE_FINISHED)
+                st['updated'] = time.time()
+                job_states[job_id] = st
+
+            if update_state is not None and update_state == UPDATE_FINISHED:
+                break
+
+            # wait with ability to wake early
+            stop_event.wait(interval)
+
+    except Exception:
+        logging.exception("Error while polling updater for job %s", job_id)
+    finally:
+        # final state: if not present, ensure it's there
+        with status_lock:
+            st = job_states.get(job_id, {})
+            st.setdefault('done', True)
+            st.setdefault('msg', st.get('msg', 'finished'))
+            st['updated'] = time.time()
+            job_states[job_id] = st
+
+        logging.info("Update finished for job %s", job_id)
+        # Optional: reboot if desired
+        try:
+            logging.info("Rebooting... ")
+            subprocess.run(["shutdown", "-r", "now"], check=True)
+        except Exception:
+            logging.exception("Failed to reboot after update")
 
 
 @app.route("/")
@@ -166,16 +207,24 @@ def swu_apply():
     # e.g., subprocess.Popen(["swupdate", "-i", real_path, "-e", "stable", "-v"])+
     
     # start the updater with the validated real path (not the module-level save_path)
-    ret : bool = updater.start_update(real_path)
-    msg = "apply stub (no-op)" if ret else "ERROR"
-    # start background poller thread (store as module-level variable); daemon so it won't block shutdown
-    global thread
-    thread = threading.Thread(target=poll, daemon=True)    
-    thread.start()
+    ret: bool = updater.start_update(real_path)
+    msg = "apply started" if ret else "ERROR"
+
+    # create a job id and start a per-job poller thread
+    job_id = str(uuid.uuid4())
+    with status_lock:
+        job_states[job_id] = {"msg": "starting", "state": None, "done": False, "updated": time.time()}
+
+    stop_event = threading.Event()
+    job_events[job_id] = stop_event
+    t = threading.Thread(target=poll, args=(job_id, stop_event), daemon=True)
+    job_threads[job_id] = t
+    t.start()
 
     return jsonify({
         "ok": True,
         "message": msg,
+        "job_id": job_id,
         "received": {"filename": filename, "path": real_path}
     }), 200
 
@@ -187,6 +236,44 @@ def get_ip_address(ifname):
         0x8915,  # SIOCGIFADDR
         struct.pack('256s', ifname[:15])
     )[20:24])
+
+
+@app.get('/api/swu/progress/<job_id>')
+def swu_progress(job_id):
+    """Return the latest progress state for a job as JSON."""
+    with status_lock:
+        st = job_states.get(job_id)
+        if st is None:
+            return jsonify({"ok": False, "error": "unknown job"}), 404
+        return jsonify({"ok": True, **st}), 200
+
+
+@app.get('/api/swu/progress/<job_id>/stream')
+def swu_progress_stream(job_id):
+    """SSE stream of progress updates for a job."""
+    from flask import Response, stream_with_context
+
+    def event_stream():
+        last_ts = 0
+        while True:
+            with status_lock:
+                st = job_states.get(job_id)
+            if st is None:
+                yield f"data: {json.dumps({'error':'unknown job'})}\n\n"
+                break
+
+            # send only if updated
+            if st.get('updated', 0) != last_ts:
+                last_ts = st.get('updated', 0)
+                yield f"data: {json.dumps(st)}\n\n"
+
+            # stop if done
+            if st.get('done'):
+                break
+
+            time.sleep(0.5)
+
+    return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
 
 if __name__ == "__main__":

@@ -165,7 +165,7 @@ class UpdatePipe(TcpClient):
         return True
     
 
-    def read_state(self) -> int:
+    def read_state(self) -> tuple:
         if not self.__connection_status:
             return None
         
@@ -201,5 +201,5 @@ class UpdatePipe(TcpClient):
         if reply["message"] != "":
             logging.log(logging.INFO, "%s", reply["message"])
 
-        return reply["update_status"]
+        return reply["update_status"], reply["message"]
         

@@ -159,6 +159,9 @@
         <button id="applyBtn" class="secondary" disabled>Apply Update</button>
         <span id="swuStatus" class="muted"></span>
       </div>
+      <div id="swuLog" class="muted" style="white-space:pre-wrap;max-height:120px;overflow:auto;border:1px solid var(--border);padding:8px;border-radius:8px;margin-top:8px;background:#fff;">
+        <!-- server messages will appear here -->
+      </div>
     </div>
   </main>
 
@@ -440,17 +443,31 @@
       progressBar.style.width = '0%';
     }
 
+    let lastServerMsg = null;
+    function appendServerLog(line) {
+      const log = document.getElementById('swuLog');
+      if (!log) return;
+      const el = document.createElement('div');
+      el.textContent = line;
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+    }
+
     function updateApplyUI(msg) {
+      // prefer explicit server message text
+      const serverText = msg.msg || msg.message || null;
+      if (serverText && serverText !== lastServerMsg) {
+        lastServerMsg = serverText;
+        appendServerLog(serverText);
+      }
+
       const pct = extractPercent(msg);
       if (pct != null) {
         progressBar.style.width = pct + '%';
-        setSWUStatus(`Applying… ${pct}%`);
+        setSWUStatus(serverText ? `${serverText} — ${pct}%` : `Applying… ${pct}%`);
       } else {
-        setSWUStatus('Applying…');
+        setSWUStatus(serverText || 'Applying…');
       }
-      const details = formatStep(msg);
-      if (details && pct != null) setSWUStatus(`${details} — ${pct}%`);
-      else if (details) setSWUStatus(details);
     }
 
     function finishApplyUI(ok, message) {
@@ -471,7 +488,8 @@
 
     function startSSE(jobId) {
       try {
-        swuES = new EventSource(`/api/swu/progress/${encodeURIComponent(jobId)}`);
+        // use the /stream endpoint exposed by the server
+        swuES = new EventSource(`/api/swu/progress/${encodeURIComponent(jobId)}/stream`);
         swuES.onmessage = (ev) => {
           let msg = {};
           try { msg = JSON.parse(ev.data || '{}'); } catch {}
@@ -479,7 +497,7 @@
           const status = (msg.status || '').toUpperCase();
           if (msg.done || status === 'SUCCESS' || status === 'FAILED' || status === 'FAILURE' || status === 'DONE') {
             stopProgressWatchers();
-            finishApplyUI(status === 'SUCCESS' || status === 'DONE', msg.message || msg.info);
+            finishApplyUI(status === 'SUCCESS' || status === 'DONE', msg.message || msg.info || msg.msg);
           }
         };
         swuES.onerror = () => {

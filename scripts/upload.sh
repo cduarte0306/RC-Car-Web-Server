@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Kill the current program if running
-killall python3
+# killall python3
 
 # Upload the new version
 scp -r ./src/* root@192.168.1.10:/opt/rc-car/web-server
