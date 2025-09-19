@@ -94,6 +94,19 @@
     .help { font-size:.85rem; color: var(--muted); margin-top:6px; }
     .status-ok { color: var(--ok); }
     .status-err { color: var(--err); }
+    .log-terminal {
+      white-space: pre-wrap;
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      padding: 8px;
+      border-radius: 8px;
+      margin-top: 8px;
+      background: hsl(0, 43%, 99%);
+      color: #020202;
+      font-family: monospace;
+      font-size: 0.9rem;
+    }
   </style>
 </head>
 <body>
@@ -159,7 +172,7 @@
         <button id="applyBtn" class="secondary" disabled>Apply Update</button>
         <span id="swuStatus" class="muted"></span>
       </div>
-      <div id="swuLog" class="muted" style="white-space:pre-wrap;max-height:120px;overflow:auto;border:1px solid var(--border);padding:8px;border-radius:8px;margin-top:8px;background:#fff;">
+      <div id="swuLog" class="log-terminal">
         <!-- server messages will appear here -->
       </div>
     </div>
@@ -456,8 +469,7 @@
     function updateApplyUI(msg) {
       // prefer explicit server message text
       const serverText = msg.msg || msg.message || null;
-      if (serverText && serverText !== lastServerMsg) {
-        lastServerMsg = serverText;
+      if (serverText) {
         appendServerLog(serverText);
       }
 
@@ -474,6 +486,9 @@
       if (ok) {
         progressBar.style.width = '100%';
         setSWUStatus(message || 'Update applied successfully.', true, false);
+
+        document.getElementById('swuStatus').classList.add('status-ok');
+        document.getElementById('swuStatus').classList.remove('status-err');
       } else {
         setSWUStatus(message || 'Update failed.', false, true);
       }

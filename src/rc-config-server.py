@@ -82,8 +82,10 @@ def poll(job_id: str, stop_event: threading.Event, interval: float = 0.5) -> Non
         logging.info("Update finished for job %s", job_id)
         # Optional: reboot if desired
         try:
-            logging.info("Rebooting... ")
-            subprocess.run(["shutdown", "-r", "now"], check=True)
+            logging.info("Rebooting in 5 seconds... ")
+
+            while True:
+                subprocess.run(["shutdown", "-r", "now"], check=True)
         except Exception:
             logging.exception("Failed to reboot after update")
 
@@ -217,7 +219,7 @@ def swu_apply():
 
     stop_event = threading.Event()
     job_events[job_id] = stop_event
-    t = threading.Thread(target=poll, args=(job_id, stop_event), daemon=True)
+    t = threading.Thread(target=poll, args=(job_id, stop_event, 0.001), daemon=True)
     job_threads[job_id] = t
     t.start()
 
