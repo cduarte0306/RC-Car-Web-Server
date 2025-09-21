@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Autonomous RC Car Configuration – Version {{ version }}</title>
+  <title>RC Car Config – Web UI v{{ webui_version }} / Image v{{ version }}</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     :root {
@@ -110,7 +110,14 @@
   </style>
 </head>
 <body>
-  <header><h1>Autonomous RC Car Configuration <small style="font-weight:normal;font-size:1.0em;">v{{ version }}</small></h1></header>
+  <header>
+  <h1>
+    Autonomous RC Car Configuration
+    <small style="font-weight: normal; font-size: 1.0em;">
+      Web UI v{{ webui_version }} • Image v{{ version }}
+    </small>
+  </h1>
+</header>
 
   <main>
     <!-- Wi-Fi Card -->
@@ -489,6 +496,13 @@
 
         document.getElementById('swuStatus').classList.add('status-ok');
         document.getElementById('swuStatus').classList.remove('status-err');
+
+        // ✅ Add this for post-success reboot message
+        setTimeout(() => {
+          appendServerLog("Resetting in 5 seconds...");
+          setSWUStatus("Resetting in 5 seconds...", true, false);
+        }, 250);  // small delay after success message
+
       } else {
         setSWUStatus(message || 'Update failed.', false, true);
       }
