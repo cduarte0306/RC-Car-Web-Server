@@ -15,7 +15,7 @@ from connection_manager import UpdatePipe
 import time
 
 
-WEB_UI_VERSION = "1.00.0000"
+WEB_UI_VERSION = "1.00.0001"
 
 
 # Defines
@@ -100,12 +100,8 @@ def index():
     # Open version file
     with open('/etc/versions/version.txt') as file:
         for line in file:
-                # Check if the line starts with the desired key
-                if line.strip().startswith("OE:"):
-                    # Use partition to get the text after the separator
-                    _, _, version_ = line.partition("OE:")
-                    version = version_.strip()
-                    break
+                version = line.strip()
+                break
 
     # will look for templates/index.html
     return render_template("index.html", version=version, webui_version=WEB_UI_VERSION)
