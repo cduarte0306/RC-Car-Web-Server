@@ -15,6 +15,9 @@ from connection_manager import UpdatePipe
 import time
 
 
+WEB_UI_VERSION = "1.00.0000"
+
+
 # Defines
 UPLOAD_DIR = "/home/images"
 updater = UpdatePipe()
@@ -105,7 +108,7 @@ def index():
                     break
 
     # will look for templates/index.html
-    return render_template("index.html", version=version)
+    return render_template("index.html", version=version, webui_version=WEB_UI_VERSION)
 
 
 # keep your existing frontend endpoints; implement later:
@@ -311,7 +314,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 1:
         logging.log(logging.ERROR, "No command-line arguments provided.")
 
-    logging.log(logging.INFO, "Web server version: 1.0.0")
+    logging.log(logging.INFO, "Web server version: %s", WEB_UI_VERSION)
 
     # Interface to bind to
     ip = get_ip_address(b'enP8p1s0')
