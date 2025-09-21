@@ -92,8 +92,20 @@ def poll(job_id: str, stop_event: threading.Event, interval: float = 0.5) -> Non
 
 @app.route("/")
 def index():
+    version : str = "0.00.0000"
+
+    # Open version file
+    with open('/etc/versions/version.txt') as file:
+        for line in file:
+                # Check if the line starts with the desired key
+                if line.strip().startswith("OE:"):
+                    # Use partition to get the text after the separator
+                    _, _, version_ = line.partition("OE:")
+                    version = version_.strip()
+                    break
+
     # will look for templates/index.html
-    return render_template("index.html")
+    return render_template("index.html", version=version)
 
 
 # keep your existing frontend endpoints; implement later:
