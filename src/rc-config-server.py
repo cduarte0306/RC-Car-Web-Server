@@ -98,10 +98,13 @@ def index():
     version : str = "0.00.0000"
 
     # Open version file
-    with open('/etc/versions/version.txt') as file:
-        for line in file:
-                version = line.strip()
-                break
+    try:
+        with open('/etc/versions/oe-version.txt') as file:
+            for line in file:
+                    version = line.strip()
+                    break
+    except FileNotFoundError:
+        pass
 
     # will look for templates/index.html
     return render_template("index.html", version=version, webui_version=WEB_UI_VERSION)
