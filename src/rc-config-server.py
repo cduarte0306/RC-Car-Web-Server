@@ -15,7 +15,7 @@ from connection_manager import UpdatePipe
 import time
 
 
-WEB_UI_VERSION = "1.00.0001"
+WEB_UI_VERSION = "1.00.0002"
 
 
 # Defines
