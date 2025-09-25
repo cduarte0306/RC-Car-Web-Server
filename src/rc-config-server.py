@@ -36,7 +36,7 @@ job_events: dict = {}
 job_threads: dict = {}
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app=app, async_mode='eventlet')
 
 UPDATE_FINISHED = 3
 
