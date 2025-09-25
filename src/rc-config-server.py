@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO, emit
 import subprocess
 import sys
 import socket
@@ -35,6 +36,7 @@ job_events: dict = {}
 job_threads: dict = {}
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 UPDATE_FINISHED = 3
 
@@ -290,6 +292,17 @@ def swu_progress_stream(job_id):
             time.sleep(0.5)
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
+
+
+@socketio.on('connect', namespace='/console')
+def connect_console():
+    
+    pass
+
+
+@socketio.on('input', namespace='/console')
+def console_input(data):
+    print(data)
 
 
 if __name__ == "__main__":

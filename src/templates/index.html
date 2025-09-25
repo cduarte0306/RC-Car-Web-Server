@@ -31,6 +31,26 @@
     #status { white-space: pre-wrap; }
     .hidden { display:none; }
 
+    /* Tab styles */
+    .tabs {
+      display: flex;
+      background: #333;
+      border-radius: 8px 8px 0 0;
+      overflow: hidden;
+      margin-top: 20px;
+    }
+    .tab {
+      padding: 10px 16px;
+      cursor: pointer;
+      color: #fff;
+      flex: 1;
+      text-align: center;
+      background: #333;
+    }
+    .tab.active { background: #555; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
     /* ---- Wi-Fi icon styles ---- */
     .wifi-wrap { display:flex; align-items:center; gap:10px; }
     .wifi {
@@ -108,6 +128,11 @@
       font-size: 0.9rem;
     }
   </style>
+
+  <!-- xterm.js CSS + JS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+
 </head>
 <body>
   <header>
@@ -119,71 +144,83 @@
   </h1>
 </header>
 
-  <main>
-    <!-- Wi-Fi Card -->
+  <div class="tabs">
+    <div class="tab active" data-tab="status">Status</div>
+    <div class="tab" data-tab="console">Console</div>
+  </div>
+  <div id="console" class="tab-content">
     <div class="card">
-      <div class="row" style="justify-content: space-between;">
-        <div class="wifi-wrap">
-          <div id="wifiIcon" class="wifi scanning" aria-label="Wi-Fi status" role="img" title="Wi-Fi">
-            <span class="dot"></span>
-            <span class="arc a1"></span>
-            <span class="arc a2"></span>
-            <span class="arc a3"></span>
+      <h2>Interactive Console</h2>
+      <div id="terminal" style="height:400px;"></div>
+    </div>
+  </div>
+  <div id="status" class="tab-content active"></div>
+    <main>
+      <!-- Wi-Fi Card -->
+      <div class="card">
+        <div class="row" style="justify-content: space-between;">
+          <div class="wifi-wrap">
+            <div id="wifiIcon" class="wifi scanning" aria-label="Wi-Fi status" role="img" title="Wi-Fi">
+              <span class="dot"></span>
+              <span class="arc a1"></span>
+              <span class="arc a2"></span>
+              <span class="arc a3"></span>
+            </div>
+            <span class="muted" id="scanInfo">Click “Scan Wi-Fi” to list nearby networks.</span>
           </div>
-          <span class="muted" id="scanInfo">Click “Scan Wi-Fi” to list nearby networks.</span>
+          <button id="scanBtn" class="secondary">Scan Wi-Fi</button>
         </div>
-        <button id="scanBtn" class="secondary">Scan Wi-Fi</button>
+
+        <div style="margin-top:12px;">
+          <label for="ssid">Available Networks</label>
+          <select id="ssid">
+            <option value="" selected disabled>— No scan yet —</option>
+          </select>
+        </div>
+
+        <div id="pwRow" class="hidden" style="margin-top:12px;">
+          <label for="password">Password</label>
+          <input id="password" type="password" placeholder="Enter Wi-Fi password" />
+        </div>
+
+        <div class="row" style="margin-top:14px;">
+          <button id="connectBtn">Connect</button>
+          <span id="status" class="muted"></span>
+        </div>
       </div>
 
-      <div style="margin-top:12px;">
-        <label for="ssid">Available Networks</label>
-        <select id="ssid">
-          <option value="" selected disabled>— No scan yet —</option>
-        </select>
-      </div>
+      <!-- Software Update Card -->
+      <div class="card" id="swuCard">
+        <h2>Software Update (.swu)</h2>
 
-      <div id="pwRow" class="hidden" style="margin-top:12px;">
-        <label for="password">Password</label>
-        <input id="password" type="password" placeholder="Enter Wi-Fi password" />
-      </div>
+        <div id="dropzone" class="dropzone" tabindex="0" aria-label="Drop .swu file here">
+          <p><strong>Drag & drop</strong> your <code>.swu</code> file here, or
+            <button id="chooseBtn" type="button" class="secondary">Choose file</button>
+          </p>
+          <input id="swuFile" type="file" accept=".swu" class="hidden" />
+          <div class="help">Only .swu files are accepted.</div>
+        </div>
 
-      <div class="row" style="margin-top:14px;">
-        <button id="connectBtn">Connect</button>
-        <span id="status" class="muted"></span>
-      </div>
-    </div>
+        <div class="file-row hidden" id="fileRow">
+          <div class="file-name" id="fileName"></div>
+          <button id="clearFileBtn" type="button" class="secondary">Clear</button>
+        </div>
 
-    <!-- Software Update Card -->
-    <div class="card" id="swuCard">
-      <h2>Software Update (.swu)</h2>
+        <div class="progress-wrap hidden" id="progressWrap" aria-hidden="true">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
 
-      <div id="dropzone" class="dropzone" tabindex="0" aria-label="Drop .swu file here">
-        <p><strong>Drag & drop</strong> your <code>.swu</code> file here, or
-          <button id="chooseBtn" type="button" class="secondary">Choose file</button>
-        </p>
-        <input id="swuFile" type="file" accept=".swu" class="hidden" />
-        <div class="help">Only .swu files are accepted.</div>
+        <div class="row" style="margin-top:12px;">
+          <button id="uploadBtn" disabled>Upload</button>
+          <button id="applyBtn" class="secondary" disabled>Apply Update</button>
+          <span id="swuStatus" class="muted"></span>
+        </div>
+        <div id="swuLog" class="log-terminal">
+          <!-- server messages will appear here -->
+        </div>
       </div>
-
-      <div class="file-row hidden" id="fileRow">
-        <div class="file-name" id="fileName"></div>
-        <button id="clearFileBtn" type="button" class="secondary">Clear</button>
-      </div>
-
-      <div class="progress-wrap hidden" id="progressWrap" aria-hidden="true">
-        <div class="progress-bar" id="progressBar"></div>
-      </div>
-
-      <div class="row" style="margin-top:12px;">
-        <button id="uploadBtn" disabled>Upload</button>
-        <button id="applyBtn" class="secondary" disabled>Apply Update</button>
-        <span id="swuStatus" class="muted"></span>
-      </div>
-      <div id="swuLog" class="log-terminal">
-        <!-- server messages will appear here -->
-      </div>
-    </div>
-  </main>
+    </main>
+  </div>
 
   <script>
     // ===== Wi-Fi logic =====
@@ -195,6 +232,16 @@
     const scanInfo = document.getElementById('scanInfo');
     const wifiIcon = document.getElementById('wifiIcon');
 
+    // ===== Tab switching =====
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.tab).classList.add('active');
+      });
+    });
+
     function setStatus(text) { statusEl.textContent = text; }
     function setScanInfo(text) { scanInfo.textContent = text; }
 
@@ -202,6 +249,20 @@
       wifiIcon.classList.remove('connected','connecting','scanning','error');
       if (state) wifiIcon.classList.add(state);
     }
+
+    // ===== Terminal setup =====
+    const term = new Terminal({ cursorBlink: true });
+    term.open(document.getElementById('terminal'));
+    term.write("Connecting to RC Car CLI...\r\n");
+
+    // WebSocket to Flask backend
+    const socket = new WebSocket("ws://" + window.location.host + "/ws/console");
+
+    socket.onmessage = (ev) => term.write(ev.data);
+    term.onData(data => socket.send(data));
+
+    socket.onopen = () => term.write("Connected.\r\n");
+    socket.onerror = () => term.write("\r\n[Error: connection failed]\r\n");
 
     async function scanWifi() {
       setStatus('');
