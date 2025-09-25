@@ -221,7 +221,7 @@
       </div>
     </main>
   </div>
-
+  <script src="/socket.io/socket.io.js"></script>
   <script>
     // ===== Wi-Fi logic =====
     const scanBtn = document.getElementById('scanBtn');
@@ -256,14 +256,32 @@
     term.write("Connecting to RC Car CLI...\r\n");
 
     // WebSocket to Flask backend
-    const socket = new WebSocket("ws://" + window.location.host + "/ws/console");
+    // Connect to the backend namespace `/console`
+    const socket = io('/console');
 
-    socket.onmessage = (ev) => term.write(ev.data);
-    term.onData(data => socket.send(data));
+    socket.on('connect', () => {
+      console.log('Connected to /console namespace');
+    });
 
-    socket.onopen = () => term.write("Connected.\r\n");
-    socket.onerror = () => term.write("\r\n[Error: connection failed]\r\n");
+    socket.on('disconnect', () => {
+      console.log('Disconnected from server');
+    });
 
+    // Capture user input and send to backend
+    term.onData(data => {
+      socket.emit('input', data);
+    });
+
+    // Display messages from backend
+    socket.on('output', msg => {
+      term.write(msg);
+    });
+
+    // Example: send data to server
+    function sendInput() {
+      const msg = document.getElementById('inputBox').value;
+      socket.emit('input', msg);
+    }
     async function scanWifi() {
       setStatus('');
       setScanInfo('Scanning…');
