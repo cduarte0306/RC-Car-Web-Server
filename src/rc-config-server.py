@@ -15,7 +15,14 @@ from connection_manager import UpdatePipe
 import time
 
 
-WEB_UI_VERSION = "1.00.0001"
+WEB_UI_VERSION = "1.00.0002"
+
+
+# Persisted Wi-Fi state (last configured SSID, etc.)
+WIFI_STATE_PATH = os.environ.get(
+    "RC_CAR_WIFI_STATE_PATH",
+    "/var/lib/rc-car-webserver/wifi.json",
+)
 
 
 # Defines
@@ -37,6 +44,132 @@ job_threads: dict = {}
 app = Flask(__name__)
 
 UPDATE_FINISHED = 3
+
+
+def _load_wifi_state() -> dict:
+    try:
+        with open(WIFI_STATE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        logging.exception("Failed to load Wi-Fi state from %s", WIFI_STATE_PATH)
+        return {}
+
+
+def _save_wifi_state(state: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(WIFI_STATE_PATH), exist_ok=True)
+        tmp = WIFI_STATE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.replace(tmp, WIFI_STATE_PATH)
+    except Exception:
+        logging.exception("Failed to save Wi-Fi state to %s", WIFI_STATE_PATH)
+
+
+def _get_ipv4_for_device(device: str) -> str | None:
+    if not device:
+        return None
+    try:
+        out = subprocess.check_output(
+            ["ip", "-4", "-o", "addr", "show", "dev", device],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        # Example: "3: wlan0    inet 192.168.1.20/24 brd ..."
+        for line in out.splitlines():
+            parts = line.split()
+            if "inet" in parts:
+                idx = parts.index("inet")
+                if idx + 1 < len(parts):
+                    return parts[idx + 1].split("/", 1)[0]
+    except Exception:
+        return None
+    return None
+
+
+def _split_nmcli_t_line(line: str) -> list[str]:
+    """Split an nmcli -t line that may use ':' (default) or a custom separator."""
+    if "\t" in line:
+        return line.split("\t")
+    return line.split(":")
+
+
+def _get_wifi_status() -> dict:
+    saved = _load_wifi_state()
+    status = {
+        "connected": False,
+        "ssid": None,
+        "device": None,
+        "connection": None,
+        "ip": None,
+        "saved_ssid": saved.get("ssid"),
+        "saved_updated": saved.get("updated"),
+    }
+
+    try:
+        # First: determine whether any Wi-Fi device is connected.
+        dev_status = subprocess.check_output(
+            ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "dev", "status"],
+            text=True,
+        )
+        wifi_device = None
+        wifi_connection = None
+        for line in dev_status.splitlines():
+            if not line:
+                continue
+            parts = _split_nmcli_t_line(line)
+            if len(parts) < 4:
+                continue
+            device, dev_type, state, connection = parts[0], parts[1], parts[2], parts[3]
+            if dev_type == "wifi" and state == "connected":
+                wifi_device = device or None
+                wifi_connection = connection or None
+                break
+
+        if wifi_device:
+            status["connected"] = True
+            status["device"] = wifi_device
+            status["connection"] = wifi_connection
+            status["ip"] = _get_ipv4_for_device(wifi_device)
+
+            # Second: best-effort SSID lookup.
+            try:
+                wifi_list = subprocess.check_output(
+                    ["nmcli", "-t", "-f", "ACTIVE,SSID,DEVICE", "dev", "wifi", "list"],
+                    text=True,
+                )
+                for wline in wifi_list.splitlines():
+                    if not wline:
+                        continue
+                    wparts = _split_nmcli_t_line(wline)
+                    if len(wparts) < 3:
+                        continue
+                    active, ssid, device = wparts[0], wparts[1], wparts[2]
+                    if active.strip().lower() == "yes" and (not device or device == wifi_device):
+                        status["ssid"] = ssid or None
+                        break
+            except Exception:
+                pass
+
+            # Third: if SSID is still unknown, try reading from the active connection.
+            if not status.get("ssid") and wifi_connection:
+                try:
+                    ssid_val = subprocess.check_output(
+                        ["nmcli", "-g", "802-11-wireless.ssid", "con", "show", wifi_connection],
+                        text=True,
+                    ).strip()
+                    status["ssid"] = ssid_val or None
+                except Exception:
+                    pass
+    except FileNotFoundError:
+        status["error"] = "nmcli not found"
+    except Exception as e:
+        status["error"] = str(e)
+
+    return status
 
 
 def poll(job_id: str, stop_event: threading.Event, interval: float = 0.5) -> None:
@@ -147,14 +280,44 @@ def wifi_connect():
         return jsonify({"ok": False, "error": "Missing SSID"}), 400
 
     try:
+        # Ensure Wi-Fi radio is enabled
+        subprocess.run(["nmcli", "radio", "wifi", "on"], check=False)
+
         if password:
             cmd = ["nmcli", "dev", "wifi", "connect", ssid, "password", password]
         else:
             cmd = ["nmcli", "dev", "wifi", "connect", ssid]
         subprocess.check_call(cmd)
-        return jsonify({"ok": True}), 200
+
+        # Make sure the created/used connection is set to autoconnect
+        try:
+            active_cons = subprocess.check_output(
+                ["nmcli", "-t", "--separator", "\t", "-f", "NAME,TYPE", "con", "show", "--active"],
+                text=True,
+            )
+            wifi_con_name = None
+            for line in active_cons.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 2 and parts[1] == "802-11-wireless":
+                    wifi_con_name = parts[0]
+                    break
+            if wifi_con_name:
+                subprocess.run(["nmcli", "con", "modify", wifi_con_name, "connection.autoconnect", "yes"], check=False)
+        except Exception:
+            pass
+
+        # Persist desired SSID (do NOT store password; NetworkManager handles secrets)
+        _save_wifi_state({"ssid": ssid, "updated": time.time()})
+
+        status = _get_wifi_status()
+        return jsonify({"ok": True, **status}), 200
     except subprocess.CalledProcessError as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.get("/api/wifi/status")
+def wifi_status():
+    return jsonify({"ok": True, **_get_wifi_status()}), 200
 
 
 def _is_safe_dir(path, base):
