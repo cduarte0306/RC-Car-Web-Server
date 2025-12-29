@@ -195,12 +195,50 @@
     const scanInfo = document.getElementById('scanInfo');
     const wifiIcon = document.getElementById('wifiIcon');
 
+    let savedSsid = null;
+
     function setStatus(text) { statusEl.textContent = text; }
     function setScanInfo(text) { scanInfo.textContent = text; }
 
     function setWifiState(state) {
       wifiIcon.classList.remove('connected','connecting','scanning','error');
       if (state) wifiIcon.classList.add(state);
+    }
+
+    async function refreshWifiStatus({ quiet=false } = {}) {
+      try {
+        const res = await fetch('/api/wifi/status');
+        if (!res.ok) throw new Error('status failed');
+        const data = await res.json();
+
+        savedSsid = data.saved_ssid || null;
+
+        if (data.error) {
+          setWifiState('error');
+          setScanInfo(`Wi‑Fi status error: ${data.error}`);
+          if (!quiet) setStatus('');
+          return;
+        }
+
+        if (data.connected) {
+          setWifiState('connected');
+          const ipText = data.ip ? ` (IP: ${data.ip})` : '';
+          const devText = data.device ? ` on ${data.device}` : '';
+          setScanInfo(`Connected to "${data.ssid || 'Wi‑Fi'}"${devText}${ipText}.`);
+          if (!quiet) setStatus('');
+        } else {
+          setWifiState('');
+          if (savedSsid) {
+            setScanInfo(`Not connected. Saved network: "${savedSsid}".`);
+          } else {
+            setScanInfo('Click “Scan Wi-Fi” to list nearby networks.');
+          }
+        }
+      } catch (e) {
+        // Don’t hard-fail the whole UI if status isn’t available
+        setWifiState('error');
+        setScanInfo('Wi-Fi status unavailable.');
+      }
     }
 
     async function scanWifi() {
@@ -231,7 +269,14 @@
             opt.textContent = `${n.ssid}  ·  ${sec}  ·  ${n.signal ?? 0}%`;
             ssidSelect.appendChild(opt);
           }
-          ssidSelect.selectedIndex = 0;
+          // Prefer the saved SSID if it’s in the scan list
+          if (savedSsid) {
+            const match = [...ssidSelect.options].find(o => o.value === savedSsid);
+            if (match) match.selected = true;
+            else ssidSelect.selectedIndex = 0;
+          } else {
+            ssidSelect.selectedIndex = 0;
+          }
           updatePwVisibility();
         }
         setScanInfo(`Found ${list.length} network(s).`);
@@ -274,8 +319,18 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || 'Connect failed');
 
-        setStatus(`Connected to "${ssid}"${data.iface ? ` on ${data.iface}` : ''}${data.ip ? ` (IP: ${data.ip})` : ''}`);
-        setWifiState('connected');
+        // Server returns live status details
+        if (data.connected) {
+          const ipText = data.ip ? ` (IP: ${data.ip})` : '';
+          setStatus(`Connected to "${data.ssid || ssid}"${ipText}`);
+          setWifiState('connected');
+        } else {
+          setStatus('Connected command ran, but Wi‑Fi not active yet.');
+          setWifiState('connecting');
+        }
+
+        // Refresh saved/connected state a moment later
+        setTimeout(() => refreshWifiStatus({ quiet: true }), 800);
       } catch (e) {
         setStatus(`Failed to connect: ${e.message}`);
         setWifiState('error');
@@ -285,6 +340,9 @@
     scanBtn.addEventListener('click', scanWifi);
     ssidSelect.addEventListener('change', updatePwVisibility);
     document.getElementById('connectBtn').addEventListener('click', connectWifi);
+
+    // On boot/page-load, show current Wi‑Fi connection state (persistent across reboots)
+    refreshWifiStatus({ quiet: true });
 
     // ===== SWU upload logic (two-step: Upload -> Apply) =====
     const dropzone = document.getElementById('dropzone');
