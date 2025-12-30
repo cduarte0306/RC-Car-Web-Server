@@ -27,6 +27,7 @@ WIFI_STATE_PATH = os.environ.get(
     "RC_CAR_WIFI_STATE_PATH",
     os.path.join(WIFI_CREDENTIALS_DIR, "wifi.json"),
 )
+LEGACY_WIFI_STATE_PATH = "/var/lib/rc-car-webserver/wifi.json"
 
 
 # Defines
@@ -56,7 +57,19 @@ def _load_wifi_state() -> dict:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except FileNotFoundError:
-        return {}
+        # Backward-compat: older images stored Wi-Fi state outside /data
+        try:
+            with open(LEGACY_WIFI_STATE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            state = data if isinstance(data, dict) else {}
+            if state:
+                _save_wifi_state(state)
+            return state
+        except FileNotFoundError:
+            return {}
+        except Exception:
+            logging.exception("Failed to load legacy Wi-Fi state from %s", LEGACY_WIFI_STATE_PATH)
+            return {}
     except Exception:
         logging.exception("Failed to load Wi-Fi state from %s", WIFI_STATE_PATH)
         return {}
@@ -167,6 +180,135 @@ def _persist_wifi_credentials_snapshot(source: str) -> None:
         _atomic_write_json(WIFI_CREDENTIALS_PATH, payload, file_mode=0o600)
     except Exception:
         logging.exception("Failed to persist Wi-Fi credentials snapshot to %s", WIFI_CREDENTIALS_PATH)
+
+
+def _load_wifi_credentials() -> dict:
+    try:
+        with open(WIFI_CREDENTIALS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        logging.exception("Failed to load Wi-Fi credentials from %s", WIFI_CREDENTIALS_PATH)
+        return {}
+
+
+def _get_wifi_device() -> str | None:
+    try:
+        out = subprocess.check_output(
+            ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "dev", "status"],
+            text=True,
+        )
+        for line in out.splitlines():
+            if not line:
+                continue
+            parts = _split_nmcli_t_line(line)
+            if len(parts) < 2:
+                continue
+            device, dev_type = parts[0], parts[1]
+            if dev_type == "wifi":
+                return device or None
+    except Exception:
+        return None
+    return None
+
+
+def _restore_wifi_if_needed() -> bool:
+    """
+    If not currently connected, try to restore Wi-Fi using persisted /data credentials.
+    Returns True if connected (either already or after restore attempt).
+    """
+    status = _get_wifi_status()
+    if status.get("connected"):
+        return True
+
+    creds = _load_wifi_credentials()
+    saved = _load_wifi_state()
+
+    ssid = creds.get("ssid") or saved.get("ssid")
+    password = creds.get("password")
+    connection = creds.get("connection")
+    device = creds.get("device") or _get_wifi_device()
+
+    if not ssid:
+        return False
+
+    subprocess.run(["nmcli", "radio", "wifi", "on"], check=False)
+
+    # First try bringing up an existing connection profile (fast path).
+    if connection:
+        cmd = ["nmcli", "con", "up", "id", str(connection)]
+        if device:
+            cmd += ["ifname", str(device)]
+        res = subprocess.run(cmd, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res.returncode == 0:
+            time.sleep(1.0)
+            return bool(_get_wifi_status().get("connected"))
+        logging.warning(
+            "Wi-Fi restore: failed to bring up connection '%s' (rc=%s): %s",
+            connection,
+            res.returncode,
+            (res.stderr or res.stdout or "").strip(),
+        )
+
+    # Otherwise connect by SSID (will create/refresh a connection profile).
+    cmd = ["nmcli", "dev", "wifi", "connect", str(ssid)]
+    if password:
+        cmd += ["password", str(password)]
+    if device:
+        cmd += ["ifname", str(device)]
+    res = subprocess.run(cmd, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode != 0:
+        logging.warning(
+            "Wi-Fi restore: nmcli connect failed for ssid '%s' (rc=%s): %s",
+            ssid,
+            res.returncode,
+            (res.stderr or res.stdout or "").strip(),
+        )
+        return False
+
+    # Make sure active connection autoconnects
+    try:
+        active_cons = subprocess.check_output(
+            ["nmcli", "-t", "--separator", "\t", "-f", "NAME,TYPE", "con", "show", "--active"],
+            text=True,
+        )
+        for line in active_cons.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2 and parts[1] == "802-11-wireless":
+                subprocess.run(["nmcli", "con", "modify", parts[0], "connection.autoconnect", "yes"], check=False)
+                break
+    except Exception:
+        pass
+
+    _save_wifi_state({"ssid": ssid, "updated": time.time()})
+    _persist_wifi_credentials_snapshot(source="restore_wifi_if_needed")
+    time.sleep(1.0)
+    return bool(_get_wifi_status().get("connected"))
+
+
+def _wifi_restore_worker() -> None:
+    enabled = os.environ.get("RC_CAR_WIFI_RESTORE_ON_BOOT", "1").strip().lower()
+    if enabled in ("0", "false", "no", "off"):
+        return
+
+    _ensure_wifi_credentials_dir()
+
+    max_attempts = int(os.environ.get("RC_CAR_WIFI_RESTORE_ATTEMPTS", "15"))
+    delay_s = float(os.environ.get("RC_CAR_WIFI_RESTORE_DELAY_S", "1.0"))
+    max_delay_s = float(os.environ.get("RC_CAR_WIFI_RESTORE_MAX_DELAY_S", "20.0"))
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if _restore_wifi_if_needed():
+                logging.info("Wi-Fi restore complete")
+                return
+        except Exception:
+            logging.exception("Wi-Fi restore attempt %s failed", attempt)
+
+        time.sleep(delay_s)
+        delay_s = min(max_delay_s, delay_s * 1.5)
 
 
 def _get_ipv4_for_device(device: str) -> str | None:
@@ -586,11 +728,19 @@ if __name__ == "__main__":
 
     logging.log(logging.INFO, "Web server version: %s", WEB_UI_VERSION)
 
-    # Interface to bind to
-    ip = get_ip_address(b'enP8p1s0')
-    if not ip:
-        logging.log(logging.ERROR, "Could not determine the IP address of the interface")
-        sys.exit(1)
+    # Start a background restore attempt so Wi-Fi can come back after swupdate.
+    threading.Thread(target=_wifi_restore_worker, daemon=True).start()
+
+    bind_host = os.environ.get("RC_CAR_BIND_HOST", "0.0.0.0").strip()
+    bind_iface = os.environ.get("RC_CAR_BIND_IFACE", "enP8p1s0").strip()
+
+    # Best-effort IP discovery (used only for logging)
+    ip = None
+    try:
+        if bind_iface:
+            ip = get_ip_address(bind_iface.encode("utf-8"))
+    except Exception:
+        ip = None
 
     # Remove all files in /home/images
 
@@ -599,7 +749,7 @@ if __name__ == "__main__":
         logging.log(logging.ERROR, "ERROR: Failed to open port")
         exit(0)
         
-    logging.log(logging.INFO, "Interface IPL: %s", ip)
+    logging.log(logging.INFO, "Bind host: %s (iface %s ip %s)", bind_host, bind_iface, ip)
 
     # debug=True reloads on changes during dev
-    app.run(host=ip, port=5000, debug=True, use_reloader=False)
+    app.run(host=bind_host or "0.0.0.0", port=5000, debug=True, use_reloader=False)
