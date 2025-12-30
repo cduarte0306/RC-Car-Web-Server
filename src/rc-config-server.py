@@ -15,13 +15,17 @@ from connection_manager import UpdatePipe
 import time
 
 
-WEB_UI_VERSION = "1.00.0002"
+WEB_UI_VERSION = "1.00.0003"
 
+
+# Persistent Wi-Fi credentials/state storage (survives swupdate via /data)
+WIFI_CREDENTIALS_DIR = os.environ.get("RC_CAR_WIFI_CREDENTIALS_DIR", "/data/wifi-credentials")
+WIFI_CREDENTIALS_PATH = os.path.join(WIFI_CREDENTIALS_DIR, "credentials.json")
 
 # Persisted Wi-Fi state (last configured SSID, etc.)
 WIFI_STATE_PATH = os.environ.get(
     "RC_CAR_WIFI_STATE_PATH",
-    "/var/lib/rc-car-webserver/wifi.json",
+    os.path.join(WIFI_CREDENTIALS_DIR, "wifi.json"),
 )
 
 
@@ -67,6 +71,102 @@ def _save_wifi_state(state: dict) -> None:
         os.replace(tmp, WIFI_STATE_PATH)
     except Exception:
         logging.exception("Failed to save Wi-Fi state to %s", WIFI_STATE_PATH)
+
+def _ensure_wifi_credentials_dir() -> None:
+    try:
+        os.makedirs(WIFI_CREDENTIALS_DIR, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(WIFI_CREDENTIALS_DIR, 0o700)
+        except Exception:
+            pass
+    except Exception:
+        logging.exception("Failed to ensure Wi-Fi credentials dir exists: %s", WIFI_CREDENTIALS_DIR)
+
+
+def _atomic_write_json(path: str, data: dict, file_mode: int | None = None) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    if file_mode is not None:
+        try:
+            os.chmod(tmp, file_mode)
+        except Exception:
+            pass
+    os.replace(tmp, path)
+    if file_mode is not None:
+        try:
+            os.chmod(path, file_mode)
+        except Exception:
+            pass
+
+
+def _snapshot_wifi_credentials() -> dict:
+    """
+    Best-effort snapshot of Wi-Fi info to survive swupdate.
+    Stores SSID/password when available (plain text on disk).
+    """
+    status = _get_wifi_status()
+    device, connection = status.get("device"), status.get("connection")
+
+    ssid = status.get("ssid") or status.get("saved_ssid")
+    password = None
+
+    if connection:
+        try:
+            out = subprocess.check_output(
+                [
+                    "nmcli",
+                    "--show-secrets",
+                    "-g",
+                    "802-11-wireless.ssid,802-11-wireless-security.psk",
+                    "con",
+                    "show",
+                    connection,
+                ],
+                text=True,
+            )
+            lines = [ln.strip() for ln in out.splitlines() if ln.strip() != ""]
+            if lines:
+                ssid = lines[0] or ssid
+            if len(lines) >= 2:
+                password = lines[1] or None
+        except Exception:
+            pass
+
+    return {
+        "format_version": 1,
+        "updated": time.time(),
+        "ssid": ssid,
+        "password": password,
+        "device": device,
+        "connection": connection,
+    }
+
+
+def _persist_wifi_credentials(ssid: str | None, password: str | None, source: str) -> None:
+    _ensure_wifi_credentials_dir()
+    payload = _snapshot_wifi_credentials()
+    if ssid:
+        payload["ssid"] = ssid
+    if password:
+        payload["password"] = password
+    payload["source"] = source
+
+    try:
+        _atomic_write_json(WIFI_CREDENTIALS_PATH, payload, file_mode=0o600)
+    except Exception:
+        logging.exception("Failed to persist Wi-Fi credentials to %s", WIFI_CREDENTIALS_PATH)
+
+
+def _persist_wifi_credentials_snapshot(source: str) -> None:
+    _ensure_wifi_credentials_dir()
+    payload = _snapshot_wifi_credentials()
+    payload["source"] = source
+    try:
+        _atomic_write_json(WIFI_CREDENTIALS_PATH, payload, file_mode=0o600)
+    except Exception:
+        logging.exception("Failed to persist Wi-Fi credentials snapshot to %s", WIFI_CREDENTIALS_PATH)
 
 
 def _get_ipv4_for_device(device: str) -> str | None:
@@ -306,8 +406,9 @@ def wifi_connect():
         except Exception:
             pass
 
-        # Persist desired SSID (do NOT store password; NetworkManager handles secrets)
+        # Persist Wi-Fi info to /data so it survives software updates.
         _save_wifi_state({"ssid": ssid, "updated": time.time()})
+        _persist_wifi_credentials(ssid=ssid, password=password, source="wifi_connect")
 
         status = _get_wifi_status()
         return jsonify({"ok": True, **status}), 200
@@ -385,6 +486,13 @@ def swu_apply():
     # TODO: put your swupdate call here later
     # e.g., subprocess.Popen(["swupdate", "-i", real_path, "-e", "stable", "-v"])+
     
+    # Ensure /data/wifi-credentials exists and snapshot Wi-Fi info before swupdate/reboot.
+    # This is best-effort; update should still proceed even if snapshotting fails.
+    try:
+        _persist_wifi_credentials_snapshot(source="swu_apply")
+    except Exception:
+        pass
+
     # start the updater with the validated real path (not the module-level save_path)
     ret: bool = updater.start_update(real_path)
     msg = "apply started" if ret else "ERROR"
