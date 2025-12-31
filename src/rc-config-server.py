@@ -15,19 +15,25 @@ from connection_manager import UpdatePipe
 import time
 
 
-WEB_UI_VERSION = "1.00.0002"
+WEB_UI_VERSION = "1.00.0003"
 
+WEB_PORT = int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
+
+# Persistent Wi-Fi credentials/state storage (survives swupdate via /data)
+WIFI_CREDENTIALS_DIR = os.environ.get("RC_CAR_WIFI_CREDENTIALS_DIR", "/data/wifi-credentials")
+WIFI_CREDENTIALS_PATH = os.path.join(WIFI_CREDENTIALS_DIR, "credentials.json")
 
 # Persisted Wi-Fi state (last configured SSID, etc.)
 WIFI_STATE_PATH = os.environ.get(
     "RC_CAR_WIFI_STATE_PATH",
-    "/var/lib/rc-car-webserver/wifi.json",
+    os.path.join(WIFI_CREDENTIALS_DIR, "wifi.json"),
 )
+LEGACY_WIFI_STATE_PATH = "/var/lib/rc-car-webserver/wifi.json"
 
 
 # Defines
 UPLOAD_DIR = "/home/images"
-updater = UpdatePipe()
+updater = UpdatePipe(web_port=WEB_PORT)
 
 status_lock  = threading.Lock()
 thread_can_run : bool = False
@@ -52,7 +58,19 @@ def _load_wifi_state() -> dict:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except FileNotFoundError:
-        return {}
+        # Backward-compat: older images stored Wi-Fi state outside /data
+        try:
+            with open(LEGACY_WIFI_STATE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            state = data if isinstance(data, dict) else {}
+            if state:
+                _save_wifi_state(state)
+            return state
+        except FileNotFoundError:
+            return {}
+        except Exception:
+            logging.exception("Failed to load legacy Wi-Fi state from %s", LEGACY_WIFI_STATE_PATH)
+            return {}
     except Exception:
         logging.exception("Failed to load Wi-Fi state from %s", WIFI_STATE_PATH)
         return {}
@@ -67,6 +85,231 @@ def _save_wifi_state(state: dict) -> None:
         os.replace(tmp, WIFI_STATE_PATH)
     except Exception:
         logging.exception("Failed to save Wi-Fi state to %s", WIFI_STATE_PATH)
+
+def _ensure_wifi_credentials_dir() -> None:
+    try:
+        os.makedirs(WIFI_CREDENTIALS_DIR, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(WIFI_CREDENTIALS_DIR, 0o700)
+        except Exception:
+            pass
+    except Exception:
+        logging.exception("Failed to ensure Wi-Fi credentials dir exists: %s", WIFI_CREDENTIALS_DIR)
+
+
+def _atomic_write_json(path: str, data: dict, file_mode: int | None = None) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    if file_mode is not None:
+        try:
+            os.chmod(tmp, file_mode)
+        except Exception:
+            pass
+    os.replace(tmp, path)
+    if file_mode is not None:
+        try:
+            os.chmod(path, file_mode)
+        except Exception:
+            pass
+
+
+def _snapshot_wifi_credentials() -> dict:
+    """
+    Best-effort snapshot of Wi-Fi info to survive swupdate.
+    Stores SSID/password when available (plain text on disk).
+    """
+    status = _get_wifi_status()
+    device, connection = status.get("device"), status.get("connection")
+
+    ssid = status.get("ssid") or status.get("saved_ssid")
+    password = None
+
+    if connection:
+        try:
+            out = subprocess.check_output(
+                [
+                    "nmcli",
+                    "--show-secrets",
+                    "-g",
+                    "802-11-wireless.ssid,802-11-wireless-security.psk",
+                    "con",
+                    "show",
+                    connection,
+                ],
+                text=True,
+            )
+            lines = [ln.strip() for ln in out.splitlines() if ln.strip() != ""]
+            if lines:
+                ssid = lines[0] or ssid
+            if len(lines) >= 2:
+                password = lines[1] or None
+        except Exception:
+            pass
+
+    return {
+        "format_version": 1,
+        "updated": time.time(),
+        "ssid": ssid,
+        "password": password,
+        "device": device,
+        "connection": connection,
+    }
+
+
+def _persist_wifi_credentials(ssid: str | None, password: str | None, source: str) -> None:
+    _ensure_wifi_credentials_dir()
+    payload = _snapshot_wifi_credentials()
+    if ssid:
+        payload["ssid"] = ssid
+    if password:
+        payload["password"] = password
+    payload["source"] = source
+
+    try:
+        _atomic_write_json(WIFI_CREDENTIALS_PATH, payload, file_mode=0o600)
+    except Exception:
+        logging.exception("Failed to persist Wi-Fi credentials to %s", WIFI_CREDENTIALS_PATH)
+
+
+def _persist_wifi_credentials_snapshot(source: str) -> None:
+    _ensure_wifi_credentials_dir()
+    payload = _snapshot_wifi_credentials()
+    payload["source"] = source
+    try:
+        _atomic_write_json(WIFI_CREDENTIALS_PATH, payload, file_mode=0o600)
+    except Exception:
+        logging.exception("Failed to persist Wi-Fi credentials snapshot to %s", WIFI_CREDENTIALS_PATH)
+
+
+def _load_wifi_credentials() -> dict:
+    try:
+        with open(WIFI_CREDENTIALS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        logging.exception("Failed to load Wi-Fi credentials from %s", WIFI_CREDENTIALS_PATH)
+        return {}
+
+
+def _get_wifi_device() -> str | None:
+    try:
+        out = subprocess.check_output(
+            ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "dev", "status"],
+            text=True,
+        )
+        for line in out.splitlines():
+            if not line:
+                continue
+            parts = _split_nmcli_t_line(line)
+            if len(parts) < 2:
+                continue
+            device, dev_type = parts[0], parts[1]
+            if dev_type == "wifi":
+                return device or None
+    except Exception:
+        return None
+    return None
+
+
+def _restore_wifi_if_needed() -> bool:
+    """
+    If not currently connected, try to restore Wi-Fi using persisted /data credentials.
+    Returns True if connected (either already or after restore attempt).
+    """
+    status = _get_wifi_status()
+    if status.get("connected"):
+        return True
+
+    creds = _load_wifi_credentials()
+    saved = _load_wifi_state()
+
+    ssid = creds.get("ssid") or saved.get("ssid")
+    password = creds.get("password")
+    connection = creds.get("connection")
+    device = creds.get("device") or _get_wifi_device()
+
+    if not ssid:
+        return False
+
+    subprocess.run(["nmcli", "radio", "wifi", "on"], check=False)
+
+    # First try bringing up an existing connection profile (fast path).
+    if connection:
+        cmd = ["nmcli", "con", "up", "id", str(connection)]
+        if device:
+            cmd += ["ifname", str(device)]
+        res = subprocess.run(cmd, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res.returncode == 0:
+            time.sleep(1.0)
+            return bool(_get_wifi_status().get("connected"))
+        logging.warning(
+            "Wi-Fi restore: failed to bring up connection '%s' (rc=%s): %s",
+            connection,
+            res.returncode,
+            (res.stderr or res.stdout or "").strip(),
+        )
+
+    # Otherwise connect by SSID (will create/refresh a connection profile).
+    cmd = ["nmcli", "dev", "wifi", "connect", str(ssid)]
+    if password:
+        cmd += ["password", str(password)]
+    if device:
+        cmd += ["ifname", str(device)]
+    res = subprocess.run(cmd, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode != 0:
+        logging.warning(
+            "Wi-Fi restore: nmcli connect failed for ssid '%s' (rc=%s): %s",
+            ssid,
+            res.returncode,
+            (res.stderr or res.stdout or "").strip(),
+        )
+        return False
+
+    # Make sure active connection autoconnects
+    try:
+        active_cons = subprocess.check_output(
+            ["nmcli", "-t", "--separator", "\t", "-f", "NAME,TYPE", "con", "show", "--active"],
+            text=True,
+        )
+        for line in active_cons.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2 and parts[1] == "802-11-wireless":
+                subprocess.run(["nmcli", "con", "modify", parts[0], "connection.autoconnect", "yes"], check=False)
+                break
+    except Exception:
+        pass
+
+    _save_wifi_state({"ssid": ssid, "updated": time.time()})
+    _persist_wifi_credentials_snapshot(source="restore_wifi_if_needed")
+    time.sleep(1.0)
+    return bool(_get_wifi_status().get("connected"))
+
+
+def _wifi_restore_worker() -> None:
+    enabled = os.environ.get("RC_CAR_WIFI_RESTORE_ON_BOOT", "1").strip().lower()
+    if enabled in ("0", "false", "no", "off"):
+        return
+
+    _ensure_wifi_credentials_dir()
+
+    max_attempts = int(os.environ.get("RC_CAR_WIFI_RESTORE_ATTEMPTS", "15"))
+    delay_s = float(os.environ.get("RC_CAR_WIFI_RESTORE_DELAY_S", "1.0"))
+    max_delay_s = float(os.environ.get("RC_CAR_WIFI_RESTORE_MAX_DELAY_S", "20.0"))
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if _restore_wifi_if_needed():
+                logging.info("Wi-Fi restore complete")
+                return
+        except Exception:
+            logging.exception("Wi-Fi restore attempt %s failed", attempt)
+
+        time.sleep(delay_s)
+        delay_s = min(max_delay_s, delay_s * 1.5)
 
 
 def _get_ipv4_for_device(device: str) -> str | None:
@@ -306,8 +549,9 @@ def wifi_connect():
         except Exception:
             pass
 
-        # Persist desired SSID (do NOT store password; NetworkManager handles secrets)
+        # Persist Wi-Fi info to /data so it survives software updates.
         _save_wifi_state({"ssid": ssid, "updated": time.time()})
+        _persist_wifi_credentials(ssid=ssid, password=password, source="wifi_connect")
 
         status = _get_wifi_status()
         return jsonify({"ok": True, **status}), 200
@@ -385,6 +629,13 @@ def swu_apply():
     # TODO: put your swupdate call here later
     # e.g., subprocess.Popen(["swupdate", "-i", real_path, "-e", "stable", "-v"])+
     
+    # Ensure /data/wifi-credentials exists and snapshot Wi-Fi info before swupdate/reboot.
+    # This is best-effort; update should still proceed even if snapshotting fails.
+    try:
+        _persist_wifi_credentials_snapshot(source="swu_apply")
+    except Exception:
+        pass
+
     # start the updater with the validated real path (not the module-level save_path)
     ret: bool = updater.start_update(real_path)
     msg = "apply started" if ret else "ERROR"
@@ -478,20 +729,22 @@ if __name__ == "__main__":
 
     logging.log(logging.INFO, "Web server version: %s", WEB_UI_VERSION)
 
-    # Interface to bind to
+    # Start a background restore attempt so Wi-Fi can come back after swupdate.
+    threading.Thread(target=_wifi_restore_worker, daemon=True).start()
+
+    # Bind ONLY to Ethernet so the UI is never reachable over Wi‑Fi.
     ip = get_ip_address(b'enP8p1s0')
     if not ip:
-        logging.log(logging.ERROR, "Could not determine the IP address of the interface")
+        logging.log(logging.ERROR, "Could not determine the IP address of the ethernet interface")
         sys.exit(1)
 
     # Remove all files in /home/images
 
-    # ip = "127.0.0.1"
     if updater.init_connection() == False:
         logging.log(logging.ERROR, "ERROR: Failed to open port")
         exit(0)
         
-    logging.log(logging.INFO, "Interface IPL: %s", ip)
+    logging.log(logging.INFO, "Bind host: %s:%s (ethernet)", ip, WEB_PORT)
 
     # debug=True reloads on changes during dev
-    app.run(host=ip, port=5000, debug=True, use_reloader=False)
+    app.run(host=ip, port=WEB_PORT, debug=True, use_reloader=False)
