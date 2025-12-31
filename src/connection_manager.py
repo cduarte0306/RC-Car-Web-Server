@@ -3,6 +3,7 @@ import socket
 import time
 import ctypes
 import logging
+import os
 
 from enum import Enum, auto
 import json
@@ -97,8 +98,8 @@ class TcpClient:
         
 
 class UpdatePipe(TcpClient):
-    
-    WEBSERVER_PORT = 5000
+    # Port where the updater daemon listens for commands/progress polling.
+    UPDATER_PORT = int(os.environ.get("RC_CAR_UPDATER_PORT", "5000"))
     HOST = '127.0.0.1' 
 
     class commands(Enum):
@@ -106,13 +107,18 @@ class UpdatePipe(TcpClient):
         READ_PROGRESS = auto()
         END_PROGRESS  = auto()
 
-    def __init__(self, timeout: float = 5.0):
+    def __init__(self, timeout: float = 5.0, updater_port: int | None = None, web_port: int | None = None):
         """Create an UpdatePipe.
 
         Args:
             timeout: socket timeout in seconds for connect/recv operations (default 5.0).
+            updater_port: TCP port for the updater daemon (default RC_CAR_UPDATER_PORT or 5000).
+            web_port: caller/web-server port (sent in protocol payloads; default RC_CAR_WEB_PORT or 5000).
         """
-        super().__init__(host=UpdatePipe.HOST, port=UpdatePipe.WEBSERVER_PORT, timeout=timeout)        
+        self.updater_port = int(updater_port) if updater_port is not None else UpdatePipe.UPDATER_PORT
+        self.web_port = int(web_port) if web_port is not None else int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
+
+        super().__init__(host=UpdatePipe.HOST, port=self.updater_port, timeout=timeout)
         
         self.__socket = None
         self.timeout = float(timeout)
@@ -130,7 +136,7 @@ class UpdatePipe(TcpClient):
 
         logging.log(logging.INFO,"Starting update with file at %s", file_path)        
         msg_out : dict = {
-            "port"      : UpdatePipe.WEBSERVER_PORT,
+            "port"      : self.web_port,
             "command"   : UpdatePipe.commands.INIT_UPDATE.value,
             "file_path" : file_path
         }
@@ -170,7 +176,7 @@ class UpdatePipe(TcpClient):
             return None
         
         msg_out : dict = {
-            "port"    : UpdatePipe.WEBSERVER_PORT,
+            "port"    : self.web_port,
             "command" : UpdatePipe.commands.READ_PROGRESS.value
         }
 

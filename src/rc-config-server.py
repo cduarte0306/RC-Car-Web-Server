@@ -17,6 +17,7 @@ import time
 
 WEB_UI_VERSION = "1.00.0003"
 
+WEB_PORT = int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
 
 # Persistent Wi-Fi credentials/state storage (survives swupdate via /data)
 WIFI_CREDENTIALS_DIR = os.environ.get("RC_CAR_WIFI_CREDENTIALS_DIR", "/data/wifi-credentials")
@@ -32,7 +33,7 @@ LEGACY_WIFI_STATE_PATH = "/var/lib/rc-car-webserver/wifi.json"
 
 # Defines
 UPLOAD_DIR = "/home/images"
-updater = UpdatePipe()
+updater = UpdatePipe(web_port=WEB_PORT)
 
 status_lock  = threading.Lock()
 thread_can_run : bool = False
@@ -731,25 +732,19 @@ if __name__ == "__main__":
     # Start a background restore attempt so Wi-Fi can come back after swupdate.
     threading.Thread(target=_wifi_restore_worker, daemon=True).start()
 
-    bind_host = os.environ.get("RC_CAR_BIND_HOST", "0.0.0.0").strip()
-    bind_iface = os.environ.get("RC_CAR_BIND_IFACE", "enP8p1s0").strip()
-
-    # Best-effort IP discovery (used only for logging)
-    ip = None
-    try:
-        if bind_iface:
-            ip = get_ip_address(bind_iface.encode("utf-8"))
-    except Exception:
-        ip = None
+    # Bind ONLY to Ethernet so the UI is never reachable over Wi‑Fi.
+    ip = get_ip_address(b'enP8p1s0')
+    if not ip:
+        logging.log(logging.ERROR, "Could not determine the IP address of the ethernet interface")
+        sys.exit(1)
 
     # Remove all files in /home/images
 
-    # ip = "127.0.0.1"
     if updater.init_connection() == False:
         logging.log(logging.ERROR, "ERROR: Failed to open port")
         exit(0)
         
-    logging.log(logging.INFO, "Bind host: %s (iface %s ip %s)", bind_host, bind_iface, ip)
+    logging.log(logging.INFO, "Bind host: %s:%s (ethernet)", ip, WEB_PORT)
 
     # debug=True reloads on changes during dev
-    app.run(host=bind_host or "0.0.0.0", port=5000, debug=True, use_reloader=False)
+    app.run(host=ip, port=WEB_PORT, debug=True, use_reloader=False)
