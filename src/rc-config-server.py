@@ -15,7 +15,7 @@ from connection_manager import UpdatePipe
 import time
 
 
-WEB_UI_VERSION = "1.00.0003"
+WEB_UI_VERSION = "1.00.0004"
 
 WEB_PORT = int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
 
