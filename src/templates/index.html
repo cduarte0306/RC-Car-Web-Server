@@ -6,28 +6,228 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     :root {
-      --bg: #f7f7f8;
-      --card: #ffffff;
-      --ink: #111;
-      --muted: #666;
-      --ok: #16a34a;
-      --warn: #f59e0b;
-      --err: #dc2626;
-      --border: #e5e7eb;
-      --bar: #0ea5e9;
+      --bg: #05080a;
+      --bg-soft: #0d1417;
+      --card: rgba(8, 17, 20, 0.85);
+      --card-elevated: rgba(9, 22, 26, 0.92);
+      --ink: #effaf5;
+      --muted: #92a8a1;
+      --ok: #39d681;
+      --warn: #f7c15d;
+      --err: #ff6d72;
+      --border: rgba(101, 142, 126, 0.24);
+      --bar: linear-gradient(90deg, #31d47a 0%, #77e17f 100%);
+      --accent: #77e17f;
+      --accent-deep: #103223;
+      --shadow: 0 20px 48px rgba(0, 0, 0, 0.45);
+      --radius: 20px;
     }
-    body { font-family: ui-sans-serif, system-ui, Arial; margin: 24px; background: var(--bg); color: var(--ink); }
-    header { background:#111; color:#fff; padding:14px 16px; border-radius:12px; }
-    main { margin-top: 20px; display: grid; gap: 16px; max-width: 720px; }
-    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; box-shadow: 0 1px 6px rgba(0,0,0,.05); }
-    .card h2 { margin: 0 0 10px; font-size: 1.1rem; }
-    label { display:block; font-weight:600; margin-bottom:6px; }
-    select, input[type="password"] { width:100%; padding:10px; border:1px solid #ccc; border-radius:8px; font-size:1rem; }
-    button { padding:10px 14px; border-radius:10px; border:1px solid #222; background:#111; color:#fff; font-weight:600; cursor:pointer; }
-    button.secondary { background:#fff; color:#111; }
-    button[disabled] { opacity:.5; cursor:not-allowed; }
-    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-    .muted { color:var(--muted); font-size:.9rem; }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI Variable", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% -20%, rgba(119, 225, 127, 0.24), transparent 45%),
+        radial-gradient(circle at 80% -15%, rgba(38, 178, 128, 0.22), transparent 40%),
+        linear-gradient(160deg, #030507 0%, #081114 45%, #060d10 100%);
+      padding: 26px;
+    }
+
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+      animation: rise-in 0.75s ease both;
+    }
+
+    .site-header {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 26px;
+      background: linear-gradient(140deg, rgba(11, 25, 30, 0.9), rgba(9, 19, 22, 0.84));
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .site-header::after {
+      content: "";
+      position: absolute;
+      width: 280px;
+      height: 280px;
+      right: -100px;
+      top: -140px;
+      background: radial-gradient(circle, rgba(119, 225, 127, 0.35), transparent 72%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: #9fc0b6;
+      font-size: 0.75rem;
+      margin: 0 0 10px 0;
+      font-weight: 600;
+    }
+
+    h1 {
+      margin: 0;
+      font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      font-size: clamp(1.5rem, 3.4vw, 2.45rem);
+      line-height: 1.1;
+      max-width: 720px;
+      font-weight: 700;
+    }
+
+    .version-pill {
+      display: inline-flex;
+      align-items: center;
+      margin-top: 16px;
+      border: 1px solid rgba(119, 225, 127, 0.45);
+      background: rgba(12, 43, 31, 0.48);
+      color: #b8e9ca;
+      border-radius: 999px;
+      padding: 7px 14px;
+      font-size: 0.86rem;
+      font-weight: 600;
+    }
+
+    main {
+      margin-top: 18px;
+      display: grid;
+      gap: 18px;
+      grid-template-columns: 1fr;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(4px);
+      animation: rise-in 0.8s ease both;
+    }
+
+    .card:nth-of-type(2) {
+      animation-delay: 0.08s;
+      background: var(--card-elevated);
+    }
+
+    .card h2 {
+      margin: 0;
+      font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      font-size: 1.32rem;
+      letter-spacing: 0.01em;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .subtle {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #d9eee5;
+      letter-spacing: 0.01em;
+    }
+
+    .input-wrap {
+      margin-top: 14px;
+    }
+
+    select,
+    input[type="password"] {
+      width: 100%;
+      padding: 12px 13px;
+      border: 1px solid rgba(128, 162, 151, 0.3);
+      border-radius: 12px;
+      font-size: 1rem;
+      color: #ebf8f2;
+      background: rgba(8, 16, 19, 0.96);
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    select:focus,
+    input[type="password"]:focus {
+      border-color: rgba(119, 225, 127, 0.72);
+      box-shadow: 0 0 0 4px rgba(119, 225, 127, 0.12);
+    }
+
+    button {
+      padding: 11px 15px;
+      border-radius: 12px;
+      border: 1px solid rgba(101, 171, 116, 0.52);
+      background: linear-gradient(145deg, #1f6f41, #174d31);
+      color: #eefcf4;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      transition: transform 0.12s ease, box-shadow 0.15s ease, filter 0.15s ease;
+      box-shadow: 0 9px 20px rgba(12, 46, 33, 0.45);
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      filter: brightness(1.08);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button.secondary {
+      background: rgba(8, 16, 19, 0.96);
+      border-color: rgba(130, 164, 152, 0.33);
+      color: #d6e9e1;
+      box-shadow: none;
+    }
+
+    button[disabled] {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+      filter: none;
+      box-shadow: none;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .row-actions {
+      margin-top: 16px;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
     #status { white-space: pre-wrap; }
     .hidden { display:none; }
 
@@ -76,20 +276,21 @@
 
     /* ---- SWU dropzone & progress ---- */
     .dropzone {
-      border: 2px dashed #cbd5e1;
+      border: 1px dashed rgba(136, 170, 158, 0.5);
       border-radius: 12px;
       padding: 18px;
       text-align: center;
-      background: #fafafa;
-      transition: background .15s ease, border-color .15s ease;
+      background: rgba(7, 15, 18, 0.85);
+      transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
     }
     .dropzone.dragover {
-      background: #eef6ff;
-      border-color: #60a5fa;
+      background: rgba(14, 37, 27, 0.88);
+      border-color: rgba(119, 225, 127, 0.85);
+      box-shadow: 0 0 0 4px rgba(119, 225, 127, 0.13);
     }
     .file-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px; }
     .file-name { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .progress-wrap { margin-top:10px; height:10px; background:#e5e7eb; border-radius:999px; overflow:hidden; }
+    .progress-wrap { margin-top:10px; height:10px; background:#243034; border-radius:999px; overflow:hidden; }
     .progress-bar { width:0%; height:100%; background: var(--bar); transition: width .15s ease; }
     .help { font-size:.85rem; color: var(--muted); margin-top:6px; }
     .status-ok { color: var(--ok); }
@@ -98,30 +299,83 @@
       white-space: pre-wrap;
       max-height: 200px;
       overflow-y: auto;
-      border: 1px solid var(--border);
+      border: 1px solid rgba(129, 161, 150, 0.25);
       padding: 8px;
       border-radius: 8px;
       margin-top: 8px;
-      background: hsl(0, 43%, 99%);
-      color: #020202;
+      background: #061015;
+      color: #d8f2e8;
       font-family: monospace;
       font-size: 0.9rem;
+    }
+
+    .card-divider {
+      margin: 16px 0;
+      border-top: 1px solid rgba(116, 152, 141, 0.2);
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border-radius: 999px;
+      border: 1px solid rgba(119, 225, 127, 0.35);
+      background: rgba(12, 39, 29, 0.34);
+      padding: 7px 12px;
+      color: #b8e9ca;
+      font-size: 0.84rem;
+      font-weight: 600;
+    }
+
+    @keyframes rise-in {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (min-width: 900px) {
+      main {
+        grid-template-columns: minmax(320px, 0.85fr) minmax(430px, 1.15fr);
+      }
+    }
+
+    @media (max-width: 720px) {
+      body {
+        padding: 16px;
+      }
+
+      .site-header,
+      .card {
+        padding: 18px;
+        border-radius: 16px;
+      }
     }
   </style>
 </head>
 <body>
-  <header>
-  <h1>
-    Autonomous RC Car Configuration
-    <small style="font-weight: normal; font-size: 1.0em;">
-      Web UI v{{ webui_version }} • Image v{{ version }}
-    </small>
-  </h1>
-</header>
+  <div class="page">
+  <header class="site-header">
+    <p class="eyebrow">Edge Robotics</p>
+    <h1>Autonomous RC Car Configuration Console</h1>
+    <div class="version-pill">Web UI v{{ webui_version }} • Image v{{ version }}</div>
+  </header>
 
   <main>
     <!-- Wi-Fi Card -->
     <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Network Provisioning</h2>
+          <p class="subtle">Scan, validate, and connect this device to operational Wi-Fi.</p>
+        </div>
+        <div class="status-pill">Live Network Control</div>
+      </div>
+
       <div class="row" style="justify-content: space-between;">
         <div class="wifi-wrap">
           <div id="wifiIcon" class="wifi scanning" aria-label="Wi-Fi status" role="img" title="Wi-Fi">
@@ -135,19 +389,19 @@
         <button id="scanBtn" class="secondary">Scan Wi-Fi</button>
       </div>
 
-      <div style="margin-top:12px;">
+      <div class="input-wrap">
         <label for="ssid">Available Networks</label>
         <select id="ssid">
           <option value="" selected disabled>— No scan yet —</option>
         </select>
       </div>
 
-      <div id="pwRow" class="hidden" style="margin-top:12px;">
+      <div id="pwRow" class="hidden input-wrap">
         <label for="password">Password</label>
         <input id="password" type="password" placeholder="Enter Wi-Fi password" />
       </div>
 
-      <div class="row" style="margin-top:14px;">
+      <div class="row row-actions">
         <button id="connectBtn">Connect</button>
         <span id="status" class="muted"></span>
       </div>
@@ -155,7 +409,12 @@
 
     <!-- Software Update Card -->
     <div class="card" id="swuCard">
-      <h2>Software Update (.swu)</h2>
+      <div class="card-head">
+        <div>
+          <h2>Software Update Pipeline</h2>
+          <p class="subtle">Upload a validated package and apply it with live telemetry.</p>
+        </div>
+      </div>
 
       <div id="dropzone" class="dropzone" tabindex="0" aria-label="Drop .swu file here">
         <p><strong>Drag & drop</strong> your <code>.swu</code> file here, or
@@ -174,7 +433,9 @@
         <div class="progress-bar" id="progressBar"></div>
       </div>
 
-      <div class="row" style="margin-top:12px;">
+      <div class="card-divider"></div>
+
+      <div class="row">
         <button id="uploadBtn" disabled>Upload</button>
         <button id="applyBtn" class="secondary" disabled>Apply Update</button>
         <span id="swuStatus" class="muted"></span>
@@ -184,6 +445,7 @@
       </div>
     </div>
   </main>
+  </div>
 
   <script>
     // ===== Wi-Fi logic =====
