@@ -10,7 +10,6 @@ import json
 
 logger = logging.getLogger(__name__)
 
-
 class TcpClient:
     def __init__(self, port, host:str, timeout:float):
         super().__init__()
@@ -28,13 +27,15 @@ class TcpClient:
             bool: _description_
         """
         self.__timeout = timeout
-
+        logger = logging.getLogger()
+        logger.info("Opening socket connection at port %s with timeout %s seconds", self.__port, self.__timeout)
         try:
             self.__socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.__socket.connect((self.__host, self.__port))
             self.__socket.settimeout(self.__timeout)
+            logger.info("Socket connection established at port %s", self.__port)
         except Exception as e:
-            print(e)
+            logger.exception("Failed to open socket connection at port %s. Exception: %s", self.__port, e)
             return False
         
         return True
@@ -47,7 +48,8 @@ class TcpClient:
         if self.__socket == None:
             return
         
-        print("Closing socket")
+        logger = logging.getLogger()
+        logger.info("Closing socket")
 
         self.__socket.close()
         
@@ -66,7 +68,8 @@ class TcpClient:
             return False
         
         if (type(data) != bytes):
-            print("ERROR: Invalid data type")
+            logger = logging.getLogger()
+            logger.error("ERROR: Invalid data type. Expected bytes, got %s", type(data))
             return False
         
         num_retries : int = 0
@@ -91,7 +94,6 @@ class TcpClient:
         try:
             data = self.__socket.recv(1024)
         except socket.timeout:
-            print("ERROR: Socket timeout")
             return None
         
         return data

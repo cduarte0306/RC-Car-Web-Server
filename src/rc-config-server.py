@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify
+from flask_sock import Sock
 import subprocess
 import sys
 import socket
@@ -11,13 +12,21 @@ import threading
 import logging
 import json
 
-from connection_manager import UpdatePipe
+try:
+    import debugpy
+    debugpy.listen(("0.0.0.0", 5678))
+    logging.getLogger().info("debugpy listening on port 5678")
+except ImportError:
+    pass
+
+from connection_manager import UpdatePipe, TcpClient
 import time
 
 
-WEB_UI_VERSION = "1.00.0004"
+WEB_UI_VERSION = "1.00.0005"
 
 WEB_PORT = int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
+CLI_PORT = int(os.environ.get("RC_CAR_CLI_PORT", "8001"))
 
 # Persistent Wi-Fi credentials/state storage (survives swupdate via /data)
 WIFI_CREDENTIALS_DIR = os.environ.get("RC_CAR_WIFI_CREDENTIALS_DIR", "/data/wifi-credentials")
@@ -34,6 +43,7 @@ LEGACY_WIFI_STATE_PATH = "/var/lib/rc-car-webserver/wifi.json"
 # Defines
 UPLOAD_DIR = "/home/images"
 updater = UpdatePipe(web_port=WEB_PORT)
+tcp_client = TcpClient(port=CLI_PORT, host="127.0.0.1", timeout=5)
 
 status_lock  = threading.Lock()
 thread_can_run : bool = False
@@ -48,6 +58,7 @@ job_events: dict = {}
 job_threads: dict = {}
 
 app = Flask(__name__)
+sock = Sock(app)
 
 UPDATE_FINISHED = 3
 
@@ -704,6 +715,55 @@ def swu_progress_stream(job_id):
             time.sleep(0.5)
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
+
+
+@sock.route('/ws/terminal')
+def terminal_ws(ws):
+    """
+    WebSocket terminal bridge
+    """
+    stop = threading.Event()
+    tcp = TcpClient(port=CLI_PORT, host="127.0.0.1", timeout=1)
+    tcp.open(timeout=1)
+
+    ws.send("\r\n\x1b[1;32mRC Car Terminal\x1b[0m\r\n")
+    ws.send("\x1b[2mConnected to server — echo mode active\x1b[0m\r\n\r\n")
+    ws.send("\x1b[32m$\x1b[0m ")
+
+    def _tcp_reader():
+        while not stop.is_set():
+            try:
+                data = tcp.read()
+            except OSError:
+                break
+            if data is None:
+                continue
+            try:
+                ws.send(data.decode('utf-8', errors='replace'))
+            except Exception:
+                break
+
+    def _terminal_input_reader():
+        while not stop.is_set():
+            data = ws.receive()
+            if data is None:
+                break
+            try:
+                tcp.send(data.encode('utf-8'))
+            except Exception:
+                pass
+
+    tcp_thread   = threading.Thread(target=_tcp_reader, daemon=True)
+    input_thread = threading.Thread(target=_terminal_input_reader, daemon=True)
+
+    tcp_thread.start()
+    input_thread.start()
+
+    input_thread.join()   # exits when the WebSocket disconnects
+    stop.set()            # signal _tcp_reader to stop
+    
+    logging.info("WebSocket disconnected, closing TCP connection")
+    tcp.close()
 
 
 if __name__ == "__main__":

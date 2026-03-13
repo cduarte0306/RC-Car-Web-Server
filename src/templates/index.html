@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <title>RC Car Config – Web UI v{{ webui_version }} / Image v{{ version }}</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
   <style>
     :root {
       --bg: #05080a;
@@ -355,6 +356,81 @@
         border-radius: 16px;
       }
     }
+
+    /* ---- Tabs ---- */
+    .tab-bar {
+      display: flex;
+      gap: 6px;
+      margin-top: 18px;
+    }
+
+    .tab-btn {
+      padding: 9px 20px;
+      border-radius: 12px 12px 0 0;
+      border: 1px solid var(--border);
+      border-bottom: none;
+      background: rgba(8, 17, 20, 0.6);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.92rem;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+      box-shadow: none;
+      letter-spacing: 0.01em;
+    }
+
+    .tab-btn:hover {
+      background: rgba(12, 28, 33, 0.85);
+      color: var(--ink);
+      transform: none;
+      filter: none;
+    }
+
+    .tab-btn.active {
+      background: rgba(9, 22, 26, 0.96);
+      color: var(--accent);
+      border-color: rgba(101, 142, 126, 0.36);
+    }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    #tab-config.active { display: block; }
+
+    /* ---- Terminal tab ---- */
+    .terminal-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 0 var(--radius) var(--radius) var(--radius);
+      padding: 22px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(4px);
+      animation: rise-in 0.5s ease both;
+    }
+
+    #terminal-container {
+      border-radius: 10px;
+      overflow: hidden;
+      margin-top: 14px;
+      background: #020c10;
+      padding: 8px;
+    }
+
+    .terminal-statusbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .conn-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+    .conn-dot.disconnected { background: var(--muted); }
   </style>
 </head>
 <body>
@@ -365,6 +441,12 @@
     <div class="version-pill">Web UI v{{ webui_version }} • Image v{{ version }}</div>
   </header>
 
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="config">Configuration</button>
+    <button class="tab-btn" data-tab="terminal">Terminal</button>
+  </div>
+
+  <div id="tab-config" class="tab-panel active">
   <main>
     <!-- Wi-Fi Card -->
     <div class="card">
@@ -445,7 +527,25 @@
       </div>
     </div>
   </main>
-  </div>
+  </div><!-- end tab-config -->
+
+  <div id="tab-terminal" class="tab-panel">
+    <div class="terminal-card">
+      <div class="card-head">
+        <div>
+          <h2>Terminal</h2>
+          <p class="subtle">Interactive console — echo mode until loopback port is configured.</p>
+        </div>
+      </div>
+      <div id="terminal-container"></div>
+      <div class="terminal-statusbar">
+        <span class="conn-dot disconnected" id="connDot"></span>
+        <span class="muted" id="connLabel">Not connected</span>
+      </div>
+    </div>
+  </div><!-- end tab-terminal -->
+
+  </div><!-- end .page -->
 
   <script>
     // ===== Wi-Fi logic =====
@@ -910,6 +1010,98 @@
       applyBtn.disabled = true;
       onApplyUpdate(uploadedMeta);
     });
+  </script>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script>
+    // ===== Tab switching =====
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    const tabPanels = document.querySelectorAll('.tab-panel');
+
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        tabBtns.forEach(b => b.classList.remove('active'));
+        tabPanels.forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+        if (btn.dataset.tab === 'terminal') initTerminal();
+      });
+    });
+
+    // ===== xterm.js terminal =====
+    let term = null;
+    let termInitialized = false;
+
+    function initTerminal() {
+      if (termInitialized) return;
+      termInitialized = true;
+
+      term = new Terminal({
+        theme: {
+          background:   '#020c10',
+          foreground:   '#d8f2e8',
+          cursor:       '#77e17f',
+          cursorAccent: '#020c10',
+          black:        '#0d1417',
+          green:        '#39d681',
+          brightGreen:  '#77e17f',
+          cyan:         '#26b280',
+          brightCyan:   '#6de8c4',
+          white:        '#effaf5',
+          brightWhite:  '#ffffff',
+        },
+        fontFamily: '"Cascadia Code", "Fira Code", "Consolas", monospace',
+        fontSize: 14,
+        lineHeight: 1.35,
+        cursorBlink: true,
+        cursorStyle: 'block',
+        scrollback: 2000,
+        cols: 100,
+        rows: 28,
+      });
+
+      term.open(document.getElementById('terminal-container'));
+
+      const connDot   = document.getElementById('connDot');
+      const connLabel = document.getElementById('connLabel');
+
+      function setConnState(connected) {
+        connDot.className   = 'conn-dot ' + (connected ? '' : 'disconnected');
+        connDot.style.background = connected ? 'var(--ok)' : 'var(--muted)';
+        connLabel.textContent    = connected ? 'Connected' : 'Not connected';
+      }
+
+      let ws = null;
+
+      function connectWS() {
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        ws = new WebSocket(`${proto}://${location.host}/ws/terminal`);
+
+        ws.onopen = () => {
+          setConnState(true);
+        };
+
+        ws.onmessage = (ev) => {
+          term.write(ev.data);
+        };
+
+        ws.onclose = () => {
+          setConnState(false);
+          term.write('\r\n\x1b[31m[disconnected]\x1b[0m\r\n');
+          // Retry after 3 s
+          setTimeout(connectWS, 3000);
+        };
+
+        ws.onerror = () => ws.close();
+      }
+
+      // Forward every keystroke to the server; server handles echo + line editing
+      term.onKey(({ key }) => {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(key);
+      });
+
+      connectWS();
+    }
   </script>
 </body>
 </html>
