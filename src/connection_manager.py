@@ -10,6 +10,19 @@ import json
 
 logger = logging.getLogger(__name__)
 
+class ProxyIfaceHdrFields(Enum):
+    
+    UpdaterRouteAddr = 1
+    WebAppRouteAddr  = auto()
+    MainAppRouteAddr = auto()
+
+class ProxyIfaceHdr(ctypes.Structure):
+    _fields_ = [
+        ("source", ctypes.c_int),
+        ("dest",   ctypes.c_int),
+        ("len",    ctypes.c_int)
+    ]
+
 class TcpClient:
     def __init__(self, port, host:str, timeout:float):
         super().__init__()
@@ -101,7 +114,7 @@ class TcpClient:
 
 class UpdatePipe(TcpClient):
     # Port where the updater daemon listens for commands/progress polling.
-    UPDATER_PORT = int(os.environ.get("RC_CAR_UPDATER_PORT", "5000"))
+    UPDATER_PORT = 8080 #int(os.environ.get("RC_CAR_UPDATER_PORT", "8080"))
     HOST = '127.0.0.1' 
 
     class commands(Enum):
@@ -109,7 +122,7 @@ class UpdatePipe(TcpClient):
         READ_PROGRESS = auto()
         END_PROGRESS  = auto()
 
-    def __init__(self, timeout: float = 5.0, updater_port: int | None = None, web_port: int | None = None):
+    def __init__(self, timeout: float = 5.0):
         """Create an UpdatePipe.
 
         Args:
@@ -117,9 +130,9 @@ class UpdatePipe(TcpClient):
             updater_port: TCP port for the updater daemon (default RC_CAR_UPDATER_PORT or 5000).
             web_port: caller/web-server port (sent in protocol payloads; default RC_CAR_WEB_PORT or 5000).
         """
-        self.updater_port = int(updater_port) if updater_port is not None else UpdatePipe.UPDATER_PORT
-        self.web_port = int(web_port) if web_port is not None else int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
-
+        self.updater_port = UpdatePipe.UPDATER_PORT
+        self.web_port = int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
+        logging.info("UpdatePipe initialized with updater_port=%d, web_port=%d", self.updater_port, self.web_port)
         super().__init__(host=UpdatePipe.HOST, port=self.updater_port, timeout=timeout)
         
         self.__socket = None
@@ -144,17 +157,21 @@ class UpdatePipe(TcpClient):
         }
 
         payload : bytes
-
         try:
             payload = json.dumps(msg_out).encode('utf-8')
         except Exception as e:
             logging.exception("Failed to serialize update message")
             return False
-        
+
+        hdr = ProxyIfaceHdr()
+        hdr.source = ProxyIfaceHdrFields.WebAppRouteAddr.value
+        hdr.dest = ProxyIfaceHdrFields.UpdaterRouteAddr.value
+        hdr.len = len(payload)
+
         ret : bool = self.send(payload)
         if not ret:
             return False
-        
+
         data : bytes = self.read()
         if data == None:
             return False

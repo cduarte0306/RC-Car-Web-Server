@@ -42,7 +42,7 @@ LEGACY_WIFI_STATE_PATH = "/var/lib/rc-car-webserver/wifi.json"
 
 # Defines
 UPLOAD_DIR = "/home/images"
-updater = UpdatePipe(web_port=WEB_PORT)
+updater = UpdatePipe()
 tcp_client = TcpClient(port=CLI_PORT, host="127.0.0.1", timeout=5)
 
 status_lock  = threading.Lock()
