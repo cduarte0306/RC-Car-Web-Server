@@ -41,7 +41,7 @@ LEGACY_WIFI_STATE_PATH = "/var/lib/rc-car-webserver/wifi.json"
 
 
 # Defines
-UPLOAD_DIR = "/home/images"
+UPLOAD_DIR = "/data/firmware"
 updater = UpdatePipe()
 tcp_client = TcpClient(port=CLI_PORT, host="127.0.0.1", timeout=5)
 
@@ -438,7 +438,10 @@ def poll(job_id: str, stop_event: threading.Event, interval: float = 0.5) -> Non
     try:
         while not stop_event.is_set():
             # read_state is expected to return (state, msg) where state may be None or a code
-            update_state, msg = updater.read_state()
+            ret = updater.read_state()
+            if ret == None:
+                break
+            update_state, msg = ret
 
             with status_lock:
                 st = job_states.get(job_id, {})
@@ -474,8 +477,8 @@ def poll(job_id: str, stop_event: threading.Event, interval: float = 0.5) -> Non
         try:
             logging.info("Rebooting in 5 seconds... ")
 
-            while True:
-                subprocess.run(["shutdown", "-r", "now"], check=True)
+            # while True:
+            print("Rebooting...") # subprocess.run(["shutdown", "-r", "now"], check=True)
         except Exception:
             logging.exception("Failed to reboot after update")
 
@@ -584,7 +587,12 @@ def _is_safe_dir(path, base):
 def swu_upload():
     if "file" not in request.files:
         return jsonify({"ok": False, "error": "No file part"}), 400
-    
+
+    try:
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Failed to create upload directory: {e}"}), 500
+
     save_path = ""
 
     # Clear current files in the dir

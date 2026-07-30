@@ -75,6 +75,9 @@ elif [[ "$MODE" == "upload" ]]; then
     scp -r ./src/* "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/" \
         || { echo "[!] SCP failed"; exit 1; }
 
+    echo "[*] Cleaning old update files..."
+    ssh "${JETSON_USER}@${JETSON_IP}" "rm -f /home/images/*.swu /data/firmware/*.swu 2>/dev/null || true"
+
     echo "[*] Upload complete: ${REMOTE_DIR}"
     exit 0
 

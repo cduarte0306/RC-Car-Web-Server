@@ -65,7 +65,7 @@ class TcpClient:
         logger.info("Closing socket")
 
         self.__socket.close()
-        
+
 
     def send(self, data:bytes) -> bool:
         """
@@ -165,8 +165,9 @@ class UpdatePipe(TcpClient):
 
         hdr = ProxyIfaceHdr()
         hdr.source = ProxyIfaceHdrFields.WebAppRouteAddr.value
-        hdr.dest = ProxyIfaceHdrFields.UpdaterRouteAddr.value
+        hdr.dest   = ProxyIfaceHdrFields.UpdaterRouteAddr.value
         hdr.len = len(payload)
+        payload = bytes(hdr) + payload
 
         ret : bool = self.send(payload)
         if not ret:
@@ -175,7 +176,8 @@ class UpdatePipe(TcpClient):
         data : bytes = self.read()
         if data == None:
             return False
-        
+
+        data = data[ctypes.sizeof(ProxyIfaceHdr):]
         reply : dict
 
         try:
@@ -193,25 +195,35 @@ class UpdatePipe(TcpClient):
     def read_state(self) -> tuple:
         if not self.__connection_status:
             return None
-        
+
         msg_out : dict = {
             "port"    : self.web_port,
             "command" : UpdatePipe.commands.READ_PROGRESS.value
         }
 
         payload : bytes
-
+        
+        hdr = ProxyIfaceHdr()
+        hdr.source = ProxyIfaceHdrFields.WebAppRouteAddr.value
+        hdr.dest = ProxyIfaceHdrFields.UpdaterRouteAddr.value
         try:
             payload = json.dumps(msg_out).encode('utf-8')
         except Exception as e:
             logging.exception("Failed to serialize update message")
             return None
-        
+
+        hdr.len = len(payload)
+        payload = bytes(hdr) + payload
+
         ret : bool = self.send(payload)
         if not ret:
             return None
-        
+
         data : bytes = self.read()
+        if data is None:
+            return None
+
+        data = data[ctypes.sizeof(ProxyIfaceHdr):]
 
         try:
             reply = json.loads(data.decode('utf-8'))
