@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify
 from flask_sock import Sock
+from werkzeug.exceptions import ClientDisconnected
 import subprocess
 import sys
 import socket
@@ -585,45 +586,68 @@ def _is_safe_dir(path, base):
 
 @app.post("/api/swu/upload")
 def swu_upload():
-    if "file" not in request.files:
-        return jsonify({"ok": False, "error": "No file part"}), 400
+    logging.info("Upload request received. Content-Length: %s, Content-Type: %s",
+                 request.content_length, request.content_type)
 
+    ret: bool = updater.command_main_app(True)
+    if not ret:
+        logging.warning("Failed to command main app to wind down")
+
+    success = False
     try:
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"Failed to create upload directory: {e}"}), 500
+        try:
+            files = request.files
+        except ClientDisconnected:
+            logging.info("Upload cancelled by client")
+            return jsonify({"ok": False, "error": "Upload cancelled"}), 400
+        except Exception as e:
+            logging.exception("Failed to parse multipart request body")
+            return jsonify({"ok": False, "error": f"Failed to parse upload: {e}"}), 400
 
-    save_path = ""
+        logging.info("Parsed files in request: %s", list(files.keys()))
 
-    # Clear current files in the dir
-    try:
-        for filename in os.listdir(UPLOAD_DIR):
-            file_path = os.path.join(UPLOAD_DIR, filename)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-                print(f"Removed: {file_path}")
-    except OSError as e:
-        print(f"Error: {e}")
+        if "file" not in files:
+            logging.error("No 'file' field in request. Available fields: %s", list(files.keys()))
+            return jsonify({"ok": False, "error": "No file part"}), 400
 
-    file = request.files["file"]
-    orig = (file.filename or "").strip()
+        try:
+            os.makedirs(UPLOAD_DIR, exist_ok=True)
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"Failed to create upload directory: {e}"}), 500
 
-    if not orig.lower().endswith(".swu"):
-        return jsonify({"ok": False, "error": "Only .swu files are allowed"}), 400
+        # Clear current files in the dir
+        try:
+            for filename in os.listdir(UPLOAD_DIR):
+                file_path = os.path.join(UPLOAD_DIR, filename)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+                    logging.info("Removed: %s", file_path)
+        except OSError as e:
+            logging.error("Error clearing upload directory: %s", e)
 
-    import uuid, time
-    save_path = os.path.join(UPLOAD_DIR, file.filename)
+        file = request.files["file"]
+        orig = (file.filename or "").strip()
 
-    if not _is_safe_dir(save_path, UPLOAD_DIR):
-        return jsonify({"ok": False, "error": "Invalid path"}), 400
+        if not orig.lower().endswith(".swu"):
+            return jsonify({"ok": False, "error": "Only .swu files are allowed"}), 400
 
-    print("File name: ", file.filename)
-    try:
-        file.save(save_path)  # streamed to disk by Werkzeug
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"Failed to save file: {e}"}), 500
+        save_path = os.path.join(UPLOAD_DIR, file.filename)
 
-    return jsonify({"ok": True, "filename": file.filename, "path": save_path}), 200
+        if not _is_safe_dir(save_path, UPLOAD_DIR):
+            return jsonify({"ok": False, "error": "Invalid path"}), 400
+
+        logging.info("Saving file: %s", file.filename)
+        try:
+            file.save(save_path)
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"Failed to save file: {e}"}), 500
+
+        logging.info("Saved uploaded file to %s", save_path)
+        success = True
+        return jsonify({"ok": True, "filename": file.filename, "path": save_path}), 200
+    finally:
+        if not success:
+            updater.command_main_app(False)
 
 
 @app.post("/api/swu/apply")
@@ -725,11 +749,33 @@ def swu_progress_stream(job_id):
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
 
 
+@app.post('/api/swu/cancel/<job_id>')
+def swu_cancel(job_id):
+    """Cancel an ongoing update for a specific job_id."""
+    ret: bool = updater.command_main_app(False)
+    if not ret:
+        return jsonify({"ok": False, "error": "Failed to command main app to cancel wind down"}), 500
+
+    with status_lock:
+        if job_id not in job_states:
+            return jsonify({"ok": False, "error": "unknown job"}), 404
+        stop_event = job_events.get(job_id)
+        if stop_event:
+            stop_event.set()
+            logging.info("Cancel requested for job %s", job_id)
+        job_states[job_id]['done'] = True
+        job_states[job_id]['msg'] = 'Cancelled by user'
+        job_states[job_id]['updated'] = time.time()
+
+    return jsonify({"ok": True, "message": "Update cancelled"}), 200
+
+
 @sock.route('/ws/terminal')
 def terminal_ws(ws):
     """
     WebSocket terminal bridge
     """
+    logging.info("WebSocket terminal connected")
     stop = threading.Event()
     tcp = TcpClient(port=CLI_PORT, host="127.0.0.1", timeout=1)
     tcp.open(timeout=1)

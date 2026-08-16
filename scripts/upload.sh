@@ -41,6 +41,9 @@ elif [[ "$MODE" == "remote" ]]; then
     scp -r ./src/* "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/" \
         || { echo "[!] SCP failed"; exit 1; }
 
+    echo "[*] Purging stale __pycache__ on Jetson..."
+    ssh "${JETSON_USER}@${JETSON_IP}" "find '${REMOTE_DIR}' -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true"
+
     echo "[*] Starting web server on Jetson..."
     ssh "${JETSON_USER}@${JETSON_IP}" \
         "cd '${REMOTE_DIR}' && nohup python3 '${REMOTE_APP_PATH}' > /dev/null 2>&1 &"
@@ -74,6 +77,9 @@ elif [[ "$MODE" == "upload" ]]; then
     echo "[*] Uploading web app to Jetson..."
     scp -r ./src/* "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/" \
         || { echo "[!] SCP failed"; exit 1; }
+
+    echo "[*] Purging stale __pycache__ on Jetson..."
+    ssh "${JETSON_USER}@${JETSON_IP}" "find '${REMOTE_DIR}' -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true"
 
     echo "[*] Cleaning old update files..."
     ssh "${JETSON_USER}@${JETSON_IP}" "rm -f /home/images/*.swu /data/firmware/*.swu 2>/dev/null || true"

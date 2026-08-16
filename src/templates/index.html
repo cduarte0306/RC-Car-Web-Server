@@ -520,6 +520,7 @@
       <div class="row">
         <button id="uploadBtn" disabled>Upload</button>
         <button id="applyBtn" class="secondary" disabled>Apply Update</button>
+        <button id="cancelBtn" class="secondary hidden" style="background: rgba(255, 109, 114, 0.15); border-color: rgba(255, 109, 114, 0.5);">Cancel</button>
         <span id="swuStatus" class="muted"></span>
       </div>
       <div id="swuLog" class="log-terminal">
@@ -712,6 +713,7 @@
     const fileInput = document.getElementById('swuFile');
     const uploadBtn = document.getElementById('uploadBtn');
     const applyBtn = document.getElementById('applyBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
     const swuStatus = document.getElementById('swuStatus');
     const fileRow = document.getElementById('fileRow');
     const fileNameEl = document.getElementById('fileName');
@@ -721,6 +723,8 @@
 
     let selectedFile = null;
     let uploadedMeta = null; // { filename, path } from server
+    let currentXhr = null; // Track the current upload XMLHttpRequest
+    let currentJobId = null; // Track the current job for apply phase
 
     function isSWU(file) { return file && /\.swu$/i.test(file.name); }
 
@@ -810,6 +814,8 @@
         setSWUStatus('Uploading… 0%');
         uploadBtn.disabled = true;
         applyBtn.disabled = true;
+        cancelBtn.classList.remove('hidden');
+        currentXhr = xhr;
       });
 
       xhr.upload.addEventListener('progress', (e) => {
@@ -822,6 +828,9 @@
 
       xhr.onreadystatechange = () => {
         if (xhr.readyState === XMLHttpRequest.DONE) {
+          if (xhr._cancelled) return; // cancel handler already updated the UI
+          cancelBtn.classList.add('hidden');
+          currentXhr = null;
           try {
             const res = JSON.parse(xhr.responseText || '{}');
             if (xhr.status >= 200 && xhr.status < 300 && res.ok) {
@@ -841,6 +850,9 @@
       };
 
       xhr.onerror = () => {
+        if (xhr._cancelled) return;
+        cancelBtn.classList.add('hidden');
+        currentXhr = null;
         setSWUStatus('Network error during upload.', false, true);
         uploadBtn.disabled = false;
       };
@@ -910,6 +922,8 @@
     }
 
     function finishApplyUI(ok, message) {
+      cancelBtn.classList.add('hidden');
+      currentJobId = null;
       if (ok) {
         progressBar.style.width = '100%';
         setSWUStatus(message || 'Update applied successfully.', true, false);
@@ -982,6 +996,7 @@
         applyBtn.disabled = true;
         resetApplyProgress();
         setSWUStatus('Starting apply…');
+        cancelBtn.classList.remove('hidden');
 
         const res = await fetch('/api/swu/apply', {
           method: 'POST',
@@ -995,6 +1010,7 @@
           return;
         }
 
+        currentJobId = data.job_id;
         // Begin live progress
         startSSE(data.job_id);
       } catch {
@@ -1009,6 +1025,38 @@
       }
       applyBtn.disabled = true;
       onApplyUpdate(uploadedMeta);
+    });
+
+    cancelBtn.addEventListener('click', async () => {
+      if (currentXhr) {
+        currentXhr._cancelled = true;
+        currentXhr.abort();
+        cancelBtn.classList.add('hidden');
+        currentXhr = null;
+        uploadBtn.disabled = false;
+        resetProgress();
+        if (uploadedMeta) {
+          applyBtn.disabled = false;
+          setSWUStatus('Upload cancelled. Previous successful upload is still available to apply.', false, true);
+        } else {
+          applyBtn.disabled = true;
+          setSWUStatus('Upload cancelled.', false, true);
+        }
+      } else if (currentJobId) {
+        try {
+          const res = await fetch(`/api/swu/cancel/${encodeURIComponent(currentJobId)}`, {
+            method: 'POST'
+          });
+          const data = await res.json();
+          if (!data.ok) {
+            setSWUStatus(`Failed to cancel: ${data.error}`, false, true);
+          } else {
+            setSWUStatus('Cancellation requested.', false, false);
+          }
+        } catch {
+          setSWUStatus('Error cancelling update.', false, true);
+        }
+      }
     });
   </script>
 

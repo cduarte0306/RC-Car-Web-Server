@@ -144,7 +144,25 @@ class UpdatePipe(TcpClient):
         self.__connection_status = self.open(5) # Open the socket
         return self.__connection_status
 
-    
+    def command_main_app(self, state : bool) -> bool:
+        if not self.__connection_status:
+            return False
+        # Command the main app to wind down the rc car since an update is in progress
+        command : dict = {
+            "state"   : state
+        }
+
+        hdr = ProxyIfaceHdr()
+        hdr.source = ProxyIfaceHdrFields.WebAppRouteAddr.value
+        hdr.dest   = ProxyIfaceHdrFields.MainAppRouteAddr.value
+        hdr.len = len(json.dumps(command).encode('utf-8'))
+        payload = bytes(hdr) + json.dumps(command).encode('utf-8')
+        logging.log(logging.INFO, "Sending command to main app: %s", command)
+        ret : bool = self.send(payload)
+        if not ret:
+            return False
+        return True
+
     def start_update(self, file_path : str) -> bool:
         if not self.__connection_status:
             return False
