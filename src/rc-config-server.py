@@ -23,7 +23,7 @@ except ImportError:
 from connection_manager import UpdatePipe, TcpClient
 import time
 
-
+UPDATE_LOCK = "/tmp/update.lock"
 WEB_UI_VERSION = "1.00.0005"
 
 WEB_PORT = int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
@@ -51,6 +51,10 @@ thread_can_run : bool = False
 progress : float = 0.0
 thread = None
 save_path : str = ""
+
+# Holds the fd for as long as this process holds the update lock (None otherwise).
+_update_lock_fd: int | None = None
+_update_lock_guard = threading.Lock()
 
 # Per-job state storage: map job_id -> state dict
 job_states: dict = {}
@@ -427,6 +431,18 @@ def _get_wifi_status() -> dict:
     return status
 
 
+def _ping_main_app_loop(stop_event: threading.Event, interval: float = 2.0) -> None:
+    """Send a periodic ping to the main app for as long as an update is in progress."""
+    print("Starting ping loop for main app")
+    while not stop_event.is_set():
+        try:
+            if updater.ping_main_app() is False:
+                logging.warning("Ping to main app failed")
+        except Exception:
+            logging.exception("Failed to ping main app")
+        stop_event.wait(interval)
+
+
 def poll(job_id: str, stop_event: threading.Event, interval: float = 0.5) -> None:
     """
     Monitor the updater for a specific job_id. Writes the latest message and progress
@@ -473,6 +489,10 @@ def poll(job_id: str, stop_event: threading.Event, interval: float = 0.5) -> Non
             st['updated'] = time.time()
             job_states[job_id] = st
 
+        # Stop the companion ping loop now that the update is done.
+        stop_event.set()
+        # Release the update lock now that the full upload+apply lifecycle has ended.
+        _release_update_lock()
         logging.info("Update finished for job %s", job_id)
         # Optional: reboot if desired
         try:
@@ -584,16 +604,98 @@ def _is_safe_dir(path, base):
     return os.path.commonpath([os.path.realpath(path), os.path.realpath(base)]) == os.path.realpath(base)
 
 
+def _acquire_update_lock() -> bool:
+    """Grab an exclusive advisory (flock) lock on UPDATE_LOCK. This uses the same
+    flock() mechanism as the external rc-car-nav updater's CFile::open, so whichever
+    side locks first is correctly detected by the other -- unlike O_EXCL/existence
+    checks, which that process's flock()-based check does not respect."""
+    global _update_lock_fd
+    with _update_lock_guard:
+        if _update_lock_fd is not None:
+            return False
+        try:
+            fd = os.open(UPDATE_LOCK, os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError:
+            logging.exception("Failed to open update lock file %s", UPDATE_LOCK)
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return False
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, f"Update started at {time.ctime()}\n".encode())
+        except OSError:
+            pass
+        _update_lock_fd = fd
+        return True
+
+
+def _release_update_lock() -> None:
+    """Release the update lock, unblocking both this server and the external updater."""
+    global _update_lock_fd
+    with _update_lock_guard:
+        if _update_lock_fd is None:
+            return
+        try:
+            fcntl.flock(_update_lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(_update_lock_fd)
+        _update_lock_fd = None
+    try:
+        os.remove(UPDATE_LOCK)
+    except OSError:
+        pass
+
+
+def _is_update_locked() -> bool:
+    """Non-blocking probe: true if anyone (this server or the external updater) holds
+    the lock. Only probes -- never leaves a lock behind."""
+    try:
+        fd = os.open(UPDATE_LOCK, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+@app.get("/api/swu/lock-status")
+def swu_lock_status():
+    """Cheap check the UI can call before streaming a large file, so a known-in-progress
+    update (web or external updater) is reported without ever starting the upload."""
+    return jsonify({"ok": True, "locked": _is_update_locked()}), 200
+
+
 @app.post("/api/swu/upload")
 def swu_upload():
     logging.info("Upload request received. Content-Length: %s, Content-Type: %s",
                  request.content_length, request.content_type)
+
+    # Acquire the update lock via flock() so it's compatible with the external rc-car-nav
+    # updater's own flock()-based locking (CFile::open) -- checking file existence alone
+    # is not enough, since that process only respects an actual advisory lock.
+    logging.info("Acquiring update lock: %s", UPDATE_LOCK)
+    if not _acquire_update_lock():
+        logging.warning("Update lock is currently held by another process: %s", UPDATE_LOCK)
+        return jsonify({"ok": False, "error": "An update is already in progress"}), 409
 
     ret: bool = updater.command_main_app(True)
     if not ret:
         logging.warning("Failed to command main app to wind down")
 
     success = False
+    upload_stop_event = threading.Event()
+    ping_thread = threading.Thread(target=_ping_main_app_loop, args=(upload_stop_event,), daemon=True)
+    ping_thread.start()
     try:
         try:
             files = request.files
@@ -615,10 +717,12 @@ def swu_upload():
         except Exception as e:
             return jsonify({"ok": False, "error": f"Failed to create upload directory: {e}"}), 500
 
-        # Clear current files in the dir
+        # Clear current files in the dir (but never the lock file we just created)
         try:
             for filename in os.listdir(UPLOAD_DIR):
                 file_path = os.path.join(UPLOAD_DIR, filename)
+                if file_path == UPDATE_LOCK:
+                    continue
                 if os.path.isfile(file_path):
                     os.remove(file_path)
                     logging.info("Removed: %s", file_path)
@@ -638,16 +742,33 @@ def swu_upload():
 
         logging.info("Saving file: %s", file.filename)
         try:
-            file.save(save_path)
+            fd = os.open(save_path, os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError as e:
+            return jsonify({"ok": False, "error": f"Failed to open destination file: {e}"}), 500
+        try:
+            # flock so this is detected by (and detects) the external updater's
+            # CFile::open, which locks the same file the same way.
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return jsonify({"ok": False, "error": "Destination file is already open by another process"}), 409
+        try:
+            with os.fdopen(fd, "wb") as dst:
+                file.save(dst)
         except Exception as e:
             return jsonify({"ok": False, "error": f"Failed to save file: {e}"}), 500
 
         logging.info("Saved uploaded file to %s", save_path)
         success = True
+
         return jsonify({"ok": True, "filename": file.filename, "path": save_path}), 200
     finally:
+        upload_stop_event.set()
         if not success:
             updater.command_main_app(False)
+            # Only release the lock on failure; on success it stays held until
+            # the subsequent apply/flash job finishes or is cancelled.
+            _release_update_lock()
 
 
 @app.post("/api/swu/apply")
@@ -656,6 +777,7 @@ def swu_apply():
     NO-OP stub: just validate inputs and return JSON.
     Fill in your swupdate call here later.
     """
+    import os
     data = request.get_json(silent=True) or {}
     path = (data.get("path") or "").strip()
     filename = (data.get("filename") or "").strip()
@@ -767,6 +889,8 @@ def swu_cancel(job_id):
         job_states[job_id]['msg'] = 'Cancelled by user'
         job_states[job_id]['updated'] = time.time()
 
+    _release_update_lock()
+
     return jsonify({"ok": True, "message": "Update cancelled"}), 200
 
 
@@ -842,6 +966,15 @@ if __name__ == "__main__":
         logging.log(logging.ERROR, "No command-line arguments provided.")
 
     logging.log(logging.INFO, "Web server version: %s", WEB_UI_VERSION)
+
+    # Any lock file left on disk from a previous run is now inert: flock() is released
+    # automatically by the kernel when the process that held it dies, so this is just
+    # tidiness, not a correctness requirement.
+    try:
+        os.remove(UPDATE_LOCK)
+        logging.info("Removed leftover update lock file from a previous run: %s", UPDATE_LOCK)
+    except OSError:
+        pass
 
     # Start a background restore attempt so Wi-Fi can come back after swupdate.
     threading.Thread(target=_wifi_restore_worker, daemon=True).start()

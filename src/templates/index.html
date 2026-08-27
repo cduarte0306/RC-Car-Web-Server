@@ -795,10 +795,23 @@
     });
 
     // Upload button: sends file; enables Apply on success
-    uploadBtn.addEventListener('click', () => {
+    uploadBtn.addEventListener('click', async () => {
       if (!selectedFile || !isSWU(selectedFile)) {
         setSWUStatus('Please select a .swu file first.', false, true);
         return;
+      }
+
+      // Check for an in-progress update first so we never start streaming a
+      // multi-GB file just to have it rejected mid-transfer.
+      try {
+        const lockRes = await fetch('/api/swu/lock-status');
+        const lockData = await lockRes.json();
+        if (lockData.locked) {
+          setSWUStatus('An update is already in progress.', false, true);
+          return;
+        }
+      } catch {
+        // Ignore lock-status check failures; the upload endpoint still enforces the lock.
       }
 
       const formData = new FormData();
@@ -839,10 +852,16 @@
               uploadedMeta = { filename: res.filename, path: res.path };
               applyBtn.disabled = false;
             } else {
+              progressWrap.classList.add('hidden');
+              progressWrap.setAttribute('aria-hidden', 'true');
+              progressBar.style.width = '0%';
               setSWUStatus(res.error || 'Upload failed.', false, true);
               uploadBtn.disabled = false;
             }
           } catch {
+            progressWrap.classList.add('hidden');
+            progressWrap.setAttribute('aria-hidden', 'true');
+            progressBar.style.width = '0%';
             setSWUStatus('Upload failed (invalid server response).', false, true);
             uploadBtn.disabled = false;
           }
@@ -853,6 +872,9 @@
         if (xhr._cancelled) return;
         cancelBtn.classList.add('hidden');
         currentXhr = null;
+        progressWrap.classList.add('hidden');
+        progressWrap.setAttribute('aria-hidden', 'true');
+        progressBar.style.width = '0%';
         setSWUStatus('Network error during upload.', false, true);
         uploadBtn.disabled = false;
       };

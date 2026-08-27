@@ -4,6 +4,7 @@ import time
 import ctypes
 import logging
 import os
+from queue import Queue
 
 from enum import Enum, auto
 import json
@@ -110,11 +111,10 @@ class TcpClient:
             return None
         
         return data
-        
 
 class UpdatePipe(TcpClient):
     # Port where the updater daemon listens for commands/progress polling.
-    UPDATER_PORT = 8080 #int(os.environ.get("RC_CAR_UPDATER_PORT", "8080"))
+    UPDATER_PORT = 9091 #int(os.environ.get("RC_CAR_UPDATER_PORT", "8080"))
     HOST = '127.0.0.1' 
 
     class commands(Enum):
@@ -134,10 +134,10 @@ class UpdatePipe(TcpClient):
         self.web_port = int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
         logging.info("UpdatePipe initialized with updater_port=%d, web_port=%d", self.updater_port, self.web_port)
         super().__init__(host=UpdatePipe.HOST, port=self.updater_port, timeout=timeout)
-        
+
         self.__socket = None
         self.timeout = float(timeout)
-
+        self._queue = Queue(10)
 
     def init_connection(self) -> bool:
         logging.log(logging.INFO, "Opening socket port")
@@ -149,7 +149,7 @@ class UpdatePipe(TcpClient):
             return False
         # Command the main app to wind down the rc car since an update is in progress
         command : dict = {
-            "state"   : state
+            "status"   : state
         }
 
         hdr = ProxyIfaceHdr()
@@ -157,11 +157,25 @@ class UpdatePipe(TcpClient):
         hdr.dest   = ProxyIfaceHdrFields.MainAppRouteAddr.value
         hdr.len = len(json.dumps(command).encode('utf-8'))
         payload = bytes(hdr) + json.dumps(command).encode('utf-8')
-        logging.log(logging.INFO, "Sending command to main app: %s", command)
         ret : bool = self.send(payload)
         if not ret:
             return False
         return True
+
+    def ping_main_app(self) -> bool:
+        if not self.__connection_status:
+            return False
+        # Heartbeat sent periodically to the main app while an update is in progress
+        command : dict = {
+            "ping" : True
+        }
+
+        hdr = ProxyIfaceHdr()
+        hdr.source = ProxyIfaceHdrFields.WebAppRouteAddr.value
+        hdr.dest   = ProxyIfaceHdrFields.MainAppRouteAddr.value
+        hdr.len = len(json.dumps(command).encode('utf-8'))
+        payload = bytes(hdr) + json.dumps(command).encode('utf-8')
+        return self.send(payload)
 
     def start_update(self, file_path : str) -> bool:
         if not self.__connection_status:
@@ -206,9 +220,7 @@ class UpdatePipe(TcpClient):
 
         if not reply["status"]:
             return False
-        
         return True
-    
 
     def read_state(self) -> tuple:
         if not self.__connection_status:
@@ -220,7 +232,6 @@ class UpdatePipe(TcpClient):
         }
 
         payload : bytes
-        
         hdr = ProxyIfaceHdr()
         hdr.source = ProxyIfaceHdrFields.WebAppRouteAddr.value
         hdr.dest = ProxyIfaceHdrFields.UpdaterRouteAddr.value
@@ -257,4 +268,3 @@ class UpdatePipe(TcpClient):
             logging.log(logging.INFO, "%s", reply["message"])
 
         return reply["update_status"], reply["message"]
-        
