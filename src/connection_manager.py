@@ -4,11 +4,25 @@ import time
 import ctypes
 import logging
 import os
+from queue import Queue
 
 from enum import Enum, auto
 import json
 
 logger = logging.getLogger(__name__)
+
+class ProxyIfaceHdrFields(Enum):
+    
+    UpdaterRouteAddr = 1
+    WebAppRouteAddr  = auto()
+    MainAppRouteAddr = auto()
+
+class ProxyIfaceHdr(ctypes.Structure):
+    _fields_ = [
+        ("source", ctypes.c_int),
+        ("dest",   ctypes.c_int),
+        ("len",    ctypes.c_int)
+    ]
 
 class TcpClient:
     def __init__(self, port, host:str, timeout:float):
@@ -52,7 +66,7 @@ class TcpClient:
         logger.info("Closing socket")
 
         self.__socket.close()
-        
+
 
     def send(self, data:bytes) -> bool:
         """
@@ -97,11 +111,10 @@ class TcpClient:
             return None
         
         return data
-        
 
 class UpdatePipe(TcpClient):
     # Port where the updater daemon listens for commands/progress polling.
-    UPDATER_PORT = int(os.environ.get("RC_CAR_UPDATER_PORT", "5000"))
+    UPDATER_PORT = 9091 #int(os.environ.get("RC_CAR_UPDATER_PORT", "8080"))
     HOST = '127.0.0.1' 
 
     class commands(Enum):
@@ -109,7 +122,7 @@ class UpdatePipe(TcpClient):
         READ_PROGRESS = auto()
         END_PROGRESS  = auto()
 
-    def __init__(self, timeout: float = 5.0, updater_port: int | None = None, web_port: int | None = None):
+    def __init__(self, timeout: float = 5.0):
         """Create an UpdatePipe.
 
         Args:
@@ -117,21 +130,53 @@ class UpdatePipe(TcpClient):
             updater_port: TCP port for the updater daemon (default RC_CAR_UPDATER_PORT or 5000).
             web_port: caller/web-server port (sent in protocol payloads; default RC_CAR_WEB_PORT or 5000).
         """
-        self.updater_port = int(updater_port) if updater_port is not None else UpdatePipe.UPDATER_PORT
-        self.web_port = int(web_port) if web_port is not None else int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
-
+        self.updater_port = UpdatePipe.UPDATER_PORT
+        self.web_port = int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
+        logging.info("UpdatePipe initialized with updater_port=%d, web_port=%d", self.updater_port, self.web_port)
         super().__init__(host=UpdatePipe.HOST, port=self.updater_port, timeout=timeout)
-        
+
         self.__socket = None
         self.timeout = float(timeout)
-
+        self._queue = Queue(10)
 
     def init_connection(self) -> bool:
         logging.log(logging.INFO, "Opening socket port")
         self.__connection_status = self.open(5) # Open the socket
         return self.__connection_status
 
-    
+    def command_main_app(self, state : bool) -> bool:
+        if not self.__connection_status:
+            return False
+        # Command the main app to wind down the rc car since an update is in progress
+        command : dict = {
+            "status"   : state
+        }
+
+        hdr = ProxyIfaceHdr()
+        hdr.source = ProxyIfaceHdrFields.WebAppRouteAddr.value
+        hdr.dest   = ProxyIfaceHdrFields.MainAppRouteAddr.value
+        hdr.len = len(json.dumps(command).encode('utf-8'))
+        payload = bytes(hdr) + json.dumps(command).encode('utf-8')
+        ret : bool = self.send(payload)
+        if not ret:
+            return False
+        return True
+
+    def ping_main_app(self) -> bool:
+        if not self.__connection_status:
+            return False
+        # Heartbeat sent periodically to the main app while an update is in progress
+        command : dict = {
+            "ping" : True
+        }
+
+        hdr = ProxyIfaceHdr()
+        hdr.source = ProxyIfaceHdrFields.WebAppRouteAddr.value
+        hdr.dest   = ProxyIfaceHdrFields.MainAppRouteAddr.value
+        hdr.len = len(json.dumps(command).encode('utf-8'))
+        payload = bytes(hdr) + json.dumps(command).encode('utf-8')
+        return self.send(payload)
+
     def start_update(self, file_path : str) -> bool:
         if not self.__connection_status:
             return False
@@ -144,21 +189,27 @@ class UpdatePipe(TcpClient):
         }
 
         payload : bytes
-
         try:
             payload = json.dumps(msg_out).encode('utf-8')
         except Exception as e:
             logging.exception("Failed to serialize update message")
             return False
-        
+
+        hdr = ProxyIfaceHdr()
+        hdr.source = ProxyIfaceHdrFields.WebAppRouteAddr.value
+        hdr.dest   = ProxyIfaceHdrFields.UpdaterRouteAddr.value
+        hdr.len = len(payload)
+        payload = bytes(hdr) + payload
+
         ret : bool = self.send(payload)
         if not ret:
             return False
-        
+
         data : bytes = self.read()
         if data == None:
             return False
-        
+
+        data = data[ctypes.sizeof(ProxyIfaceHdr):]
         reply : dict
 
         try:
@@ -169,32 +220,39 @@ class UpdatePipe(TcpClient):
 
         if not reply["status"]:
             return False
-        
         return True
-    
 
     def read_state(self) -> tuple:
         if not self.__connection_status:
             return None
-        
+
         msg_out : dict = {
             "port"    : self.web_port,
             "command" : UpdatePipe.commands.READ_PROGRESS.value
         }
 
         payload : bytes
-
+        hdr = ProxyIfaceHdr()
+        hdr.source = ProxyIfaceHdrFields.WebAppRouteAddr.value
+        hdr.dest = ProxyIfaceHdrFields.UpdaterRouteAddr.value
         try:
             payload = json.dumps(msg_out).encode('utf-8')
         except Exception as e:
             logging.exception("Failed to serialize update message")
             return None
-        
+
+        hdr.len = len(payload)
+        payload = bytes(hdr) + payload
+
         ret : bool = self.send(payload)
         if not ret:
             return None
-        
+
         data : bytes = self.read()
+        if data is None:
+            return None
+
+        data = data[ctypes.sizeof(ProxyIfaceHdr):]
 
         try:
             reply = json.loads(data.decode('utf-8'))
@@ -210,4 +268,3 @@ class UpdatePipe(TcpClient):
             logging.log(logging.INFO, "%s", reply["message"])
 
         return reply["update_status"], reply["message"]
-        
