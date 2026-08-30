@@ -24,7 +24,7 @@ from connection_manager import UpdatePipe, TcpClient
 import time
 
 UPDATE_LOCK = "/tmp/update.lock"
-WEB_UI_VERSION = "1.00.0005"
+WEB_UI_VERSION = "1.01.0000"
 
 WEB_PORT = int(os.environ.get("RC_CAR_WEB_PORT", "5000"))
 CLI_PORT = int(os.environ.get("RC_CAR_CLI_PORT", "8001"))
